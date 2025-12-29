@@ -1,0 +1,15 @@
+accelerate==1.10.1
+cryodata==0.1.1b5
+torch==2.8.0
+torchvision==0.23.0
+lmdb==1.7.3
+cryosparc-tools==4.7.1
+mrcfile==1.5.4
+annoy==1.17.3
+timm==1.0.20
+einops==0.8.1
+munkres==1.1.4
+natsort==8.4.0
+pyfftw==0.14.0
+tensorboard==2.20.0
+umap-learn==0.5.9.post2
