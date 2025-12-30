@@ -161,7 +161,6 @@ accelerate launch --mixed_precision=bf16 CryoDECO_run.py \
     --feature_dim 128 \
     --k_num 8 \
     --clustering_type 'gmm' \
-    --epochs_sgd 100 \
     --skip_train True 
 ```
 
@@ -175,8 +174,8 @@ CryoDECO adapts code from [DrgnAI](https://github.com/ml-struct-bio/drgnai). We 
 If you use CryoDECO in your research, please cite:
 ```bibtex
 @article{,
-  title={Resolving cryo-EM heterogeneity with foundation model priors},
-  author={Yang Yan, Fajie Yuan, Huaizong Shen},
+  title={CryoDECO: Deconstructing Compositional and Conformational Heterogeneity in Cryo-EM with Foundation Model Priors},
+  author={Yang Yan, Yanwanyu Xi, Shiqi Fan, Ziyun Tang, Fajie Yuan, Huaizong Shen},
   journal={},
   volume={},
   pages={},
