@@ -43,7 +43,7 @@ def settings():
             'score_bar': 0.8,
             'n_imgs_pretrain': 10000,
             'n_imgs_pose_search': 500000,
-            'epochs_sgd': 5,
+            'epochs_sgd': 100,
             'epochs_init_conf_table': -2,
 
             'use_conf_encoder': True,
@@ -80,9 +80,9 @@ def settings():
 
             'use_amp': True,
             'gradient_checkpointing': True,
-            'batch_size_hps':8,
+            'batch_size_hps':22,
             'batch_size_known_poses': 64,
-            'batch_size_sgd': 64,
+            'batch_size_sgd': 192,
             'lazy': False,
 
             # hypervolume
@@ -94,7 +94,7 @@ def settings():
             'pe_dim': 64,
             'num_shared_experts': 1,
             'k_init': 48,
-            'clustering_dim': 4,
+            'clustering_dim': 16,
             'cluster_num_evaluate': 0,
             'clustering_type': 'k-means++',
             'use_clustering_route': False,
@@ -115,7 +115,7 @@ def settings():
             'skip_train': False,
             'epoch': -1,
             'save_features': False,
-            'k_num': 2,
+            'k_num': 8,
             'k_init': 64,
             'umap_dim':16,
             'clustering_type': 'gmm',
