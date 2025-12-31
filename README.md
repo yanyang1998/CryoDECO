@@ -175,11 +175,11 @@ If you use CryoDECO in your research, please cite:
 ```bibtex
 @article{,
   title={CryoDECO: Deconstructing Compositional and Conformational Heterogeneity in Cryo-EM with Foundation Model Priors},
-  author={Yang Yan, Yanwanyu Xi, Shiqi Fan, Ziyun Tang, Fajie Yuan, Huaizong Shen},
-  journal={},
-  volume={},
-  pages={},
-  year={2025}
+  url = {https://langtaosha.org.cn/index.php/lts/preprint/view/75},
+  doi = {10.65215/LTSpreprints.2025.12.30.000075},
+  journal = {浪淘沙预印本平台},
+  author = {Yan, Yang and Xi, Yanwanyu and Fan, Shiqi and Tang, Ziyun and Yuan, Fajie and Shen, Huaizong},
+  year = {2025},
 ```
 }
 
