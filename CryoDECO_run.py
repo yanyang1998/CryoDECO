@@ -448,9 +448,7 @@ def main():
         configs['train_settings']['use_gt_poses'] = True
         configs['train_settings']['use_gt_trans'] = True
     if ((configs['train_settings']['use_gt_poses'] == True or configs['train_settings']['use_gt_trans'] == True) and configs['train_settings']['pose'] is None):
-            # and configs['train_settings']['processed_data'] is None)\
-        # pose_pkl_out = os.path.join(os.path.dirname(configs['train_settings']['processed_data']), "pose_list.data")
-        pose_pkl_out = os.path.dirname(configs['train_settings']['processed_data'])
+        pose_pkl_out = configs['train_settings']['processed_data']
         if accelerator.is_main_process:
 
             if not configs['train_settings']['particles'].endswith('.cs'):
