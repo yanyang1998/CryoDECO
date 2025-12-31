@@ -73,6 +73,7 @@ feature_dim=128   # Default: 128 (Compositional). Use 4 (Simple Motion) or 64 (C
 ```
 
 **Clustering (`k_num` & `clustering_type`):**
+
 The pipeline performs clustering on the learned latent features to generate initial volumes.
 *   **Compositional:** Set `k_num` based on the expected number of distinct species (if known).
 *   **Conformational:** `k_num` determines the number of maps sampled by clustering in the latent space. 
@@ -82,7 +83,19 @@ k_num=8               # Default: 8
 clustering_type='gmm' # Default: 'gmm' (Gaussian Mixture Model). Option: 'k-means++' (much faster)
 ```
 
+**Using the Known Poses (`use_gt_poses` & `use_gt_trans`):**
+
+By default, CryoDECO estimates particle poses during training. 
+However, if high-quality pose estimates are available (e.g., from a prior CryoSPARC refinement or ab initio job), they can be utilized to enhance reconstruction quality and accelerate convergence.
+*   Requirement: The input `particles` job must contain pose information. You can generate this by running a `Restack Particles` or `Downsample Particles` job in CryoSPARC connected to your prior refinement or ab-initio job.
+   
+```yaml
+use_gt_poses=True  # Default: False. Set to True to use CryoSPARC poses.
+use_gt_trans=True  # Default: False. Set to True to use CryoSPARC translations.
+```
+
 **Optimization:**
+
 Adjust batch sizes based on available GPU memory (Defaults tuned for NVIDIA A40 40GB).
 ```yaml
 epochs_sgd=100        # Default: 100. Decrease for very large datasets (>1M particles).
