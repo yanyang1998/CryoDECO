@@ -360,7 +360,7 @@ def scatter_annotate(
         clustering_labels: Optional[np.ndarray] = None,
         # 新增参数以控制绘图元素
         plot_scatter: bool = True,
-        plot_kde: bool = False,
+        plot_kde: bool = True,
         plot_centers: bool = True,
         annotate: bool = True,
 ) -> sns.JointGrid:
