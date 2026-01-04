@@ -59,7 +59,7 @@ pretrained_model_path='/path/to/checkpoint/'  # Path to Cryo-IEF weights
 ### 2. Hyperparameters (Optional)
 The following parameters control the latent space topology and clustering behavior. Default values are provided but should be adjusted based on the biological heterogeneity type.
 
-**Latent Dimension (`feature_dim`):**
+**Latent Dimension:**
 
 [//]: # (*   **Compositional Heterogeneity:** Set `feature_dim=128`. High dimensionality is required to ensure orthogonality between discrete structural states &#40;e.g., different complexes in a mixture&#41;.)
 [//]: # (*   **Conformational Heterogeneity:** Set `feature_dim=4`. A tight information bottleneck forces the model to map continuous dynamics onto a low-dimensional manifold.)
@@ -72,7 +72,7 @@ Generally, it is recommended that discrete compositional heterogeneity demands a
 feature_dim=128   # Default: 128 (Compositional). Use 4 (Simple Motion) or 64 (Complex Motion) for Conformational.
 ```
 
-**Clustering (`k_num` & `clustering_type`):**
+**Clustering:**
 
 The pipeline performs clustering on the learned latent features to generate initial volumes.
 *   **Compositional:** Set `k_num` based on the expected number of distinct species (if known).
@@ -83,7 +83,7 @@ k_num=8               # Default: 8
 clustering_type='gmm' # Default: 'gmm' (Gaussian Mixture Model). Option: 'k-means++' (much faster)
 ```
 
-**Using the Known Poses (`use_gt_poses` & `use_gt_trans`):**
+**Using the Known Poses (CryoDECO-pose):**
 
 By default, CryoDECO estimates particle poses during training. 
 However, if high-quality pose estimates are available (e.g., from a prior CryoSPARC refinement or ab initio job), they can be utilized to enhance reconstruction quality and accelerate convergence.
