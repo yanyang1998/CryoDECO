@@ -44,7 +44,7 @@ We recommend installing CryoDECO in a clean Conda environment to avoid dependenc
 ## ⚙️ Configuration & Parameters ##
 ### 1. Required Parameters
 These paths must be defined by the user. 
-*   **Model Weights:** The pre-trained Cryo-IEF model weights are available via [Huggingface](https://huggingface.co/westlake-repl/Cryo-IEF/tree/main/cryo_ief_checkpoint).
+*   **Model Weights:** The pre-trained Cryo-IEF model weights are available via [Huggingface](https://huggingface.co/westlake-repl/Cryo-IEF/tree/main/cryo_ief_checkpoint/cryo_ief_v1.5_vit_s).
 *   **Input Data:** CryoDECO accepts CryoSPARC job outputs (`Downsample`, `Extracted Particles`, `Restack Particles`, and `Particle Sets`).
 *   **Recommendation:** For efficient training and inference, we strongly recommend **downsampling input particles to a box size of 128 pixels**. ([Guide: How to downsample in CryoSPARC](readmes/downsample.md))
 
