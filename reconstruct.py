@@ -92,7 +92,7 @@ class ModelTrainer:
 
 
     def __init__(self,
-                 outdir: str, config_vals: dict[str, Any], load: bool = False, accelerator=None) -> None:
+                 outdir: str, config_vals: dict[str, Any], load: bool = False, accelerator=None,pixel_size=1.0) -> None:
         """Initialize model parameters and variables.
 
         Arguments
@@ -106,7 +106,20 @@ class ModelTrainer:
         self.outdir = os.path.join(outdir, 'out')
         # self.accelerator = Accelerator(kwargs_handlers=[InitProcessGroupKwargs(timeout=timedelta(seconds=96000)),DistributedDataParallelKwargs(find_unused_parameters=True)])
         self.accelerator = accelerator
+        self.pixel_size = pixel_size
         # self.accelerator.print(json.dumps(config_vals, indent=4))
+
+        self.post_training = False
+        if config_vals['post_training_id'] is not None:
+            class_ind_path = os.path.join(utils.find_target_clustering_dir(self.outdir),
+                                          f"ind_{config_vals['post_training_id']}.pkl")
+            if os.path.exists(class_ind_path):
+                # dataset_ind = pickle.load(open(class_ind_path, 'rb'))
+                config_vals['ind'] = class_ind_path
+                # load = True
+                self.accelerator.print(
+                    f"Post-training on class indices loaded from Cluster {config_vals['post_training_id']}.")
+                self.post_training = True
 
         # if we want to load the model from the last epoch saved in this directory...
         if load:
@@ -124,7 +137,7 @@ class ModelTrainer:
 
             config_vals['load'] = os.path.join(self.outdir, f"weights.{last_epoch}.pkl")
             checkpoint = torch.load(config_vals['load'])
-            config_vals['z_dim'] = checkpoint['hypervolume_params']['z_dim']
+            # config_vals['z_dim'] = checkpoint['hypervolume_params']['z_dim']
             if 'conf_encoder' in checkpoint['optimizers_state_dict']:
                 config_vals['use_conf_encoder'] = True
             else:
@@ -133,6 +146,8 @@ class ModelTrainer:
         else:
             checkpoint = None
 
+        if self.post_training:
+            self.outdir = os.path.join(self.outdir, f"post_train_{config_vals['post_training_id']}", "out")
         self.configs = TrainingConfigurations(**config_vals)
 
         # take care of existing output directories; if we are loading from a saved
@@ -141,8 +156,9 @@ class ModelTrainer:
         if self.accelerator.is_main_process:
             if os.path.exists(self.outdir):
                 if ('load' in config_vals
-                        and config_vals['load'] is not None
-                        and os.path.dirname(config_vals['load']) == self.outdir):
+                    and config_vals['load'] is not None
+                        # and os.path.dirname(config_vals['load']) == self.outdir
+                ) or self.post_training:
                     self.logger.info("Reusing existing output directory "
                                      "containing loaded checkpoint.")
 
@@ -282,7 +298,7 @@ class ModelTrainer:
             if ctf_params.shape[1] != (self.n_tilts_dataset, 8):
                 self.accelerator.print(
                     f"CTF parameters have shape {ctf_params.shape}, "
-                    f"but expected {(self.n_tilts_dataset, 8)}"
+                    f"expected {(self.n_tilts_dataset, 8)}"
                 )
 
             if self.configs.subtomogram_averaging:
@@ -464,11 +480,20 @@ class ModelTrainer:
             # self.accelerator.print(
             #     self.model.load_state_dict(state_dict, strict=False))
             if self.configs.use_conf_encoder:
-                self.accelerator.print(
-                    self.model.encoder.load_state_dict(state_dict, strict=False))
-            self.accelerator.print(self.hypervolume.load_state_dict(
-                checkpoint['hypervolume_state_dict'], strict=False))
-            self.start_epoch = checkpoint['epoch'] + 1
+                # 1. 获取当前模型(encoder)的参数字典，用于获取目标形状
+                model_dict = self.model.encoder.state_dict()
+
+                filtered_state_dict=self.filter_state_dict(state_dict, model_dict)
+
+                # 3. 加载过滤后的参数
+                # strict=False 是必须的，因为我们要允许刚被剔除的层不进行加载（它们将保持随机初始化）
+                msg = self.model.encoder.load_state_dict(filtered_state_dict, strict=False)
+
+                self.accelerator.print(msg)
+
+            # filtered_state_dict_decoder = self.filter_state_dict(checkpoint['hypervolume_state_dict'],self.hypervolume.state_dict())
+            # self.accelerator.print(self.hypervolume.load_state_dict(filtered_state_dict_decoder, strict=False))
+            self.start_epoch = checkpoint['epoch'] + 1 if not self.post_training else 0
 
             if 'output_mask_radius' in checkpoint:
                 self.output_mask.update_radius(
@@ -562,11 +587,14 @@ class ModelTrainer:
 
         # initialization from a previous checkpoint
         if self.configs.load:
+            if hasattr(self.configs, 'resume') and self.configs.resume:
             # checkpoint = torch.load(self.configs.load)
 
-            for key in self.optimizers:
-                self.optimizers[key].load_state_dict(
-                    checkpoint['optimizers_state_dict'][key])
+                for key in self.optimizers:
+                    if self.post_training and key == 'pose_table':
+                        continue
+                    self.optimizers[key].load_state_dict(
+                        checkpoint['optimizers_state_dict'][key])
 
         # dataloaders
         if self.configs.processed_data is not None:
@@ -640,7 +668,7 @@ class ModelTrainer:
         self.use_l2_smoothness_regularizer = (
                 self.configs.l2_smoothness_regularizer >= epsilon)
 
-        if self.configs.load:
+        if self.configs.load and not self.post_training:
             self.num_epochs = self.start_epoch + self.configs.epochs_sgd
             self.num_epochs += max(self.epochs_pose_search - self.start_epoch, 0)
         else:
@@ -694,8 +722,9 @@ class ModelTrainer:
         else:
             self.clustering_tool_moe = None
 
-        # self.labels_evaluate = None
+
         self.clustering_tool_evaluate = None
+        self.labels_evaluate = None
         if self.accelerator.is_main_process and (self.configs.labels_evaluate is not None or (
                 self.configs.cluster_num_evaluate is not None and self.configs.cluster_num_evaluate > 0)):
 
@@ -704,6 +733,11 @@ class ModelTrainer:
                 # labels_evaluate = np.asarray(self.data.labels_class) if self.data.labels_class is not None else np.asarray(utils.load_pkl(self.configs.labels_evaluate))
             else:
                 labels_evaluate = np.asarray(self.data.labels_class) if self.data.labels_class is not None else None
+            if self.post_training:
+                if labels_evaluate is not None:
+                    labels_evaluate = np.array(labels_evaluate)[self.index]
+            self.labels_evaluate = labels_evaluate
+
             cluster_num = max(labels_evaluate) + 1 if labels_evaluate is not None else self.configs.cluster_num_evaluate
             if cluster_num > 1:
                 self.clustering_tool_evaluate = Clustering_tool(data_num=self.data.N, n_clusters=int(max(
@@ -949,7 +983,7 @@ class ModelTrainer:
                     torch.cuda.synchronize()
 
                 end_time = time.time()
-                ind_epoch.extend(self.accelerator.gather_for_metrics(in_dict['index_p']).cpu().numpy().tolist())
+                ind_epoch.extend(self.accelerator.gather_for_metrics(in_dict['index']).cpu().numpy().tolist())
                 self.accelerator.wait_for_everyone()
                 if self.current_epoch_particles_count > n_max_particles:
                     break
@@ -1534,7 +1568,7 @@ class ModelTrainer:
                                            route_labels=self.clustering_tool_moe.labels[0].unsqueeze(
                                                -1) if self.clustering_tool_moe is not None else None) \
             # if self.accelerator.num_processes==1 else -1. * self.model.module.eval_volume(self.data.norm, zval=zval,hypervolume=self.hypervolume,route_labels=self.clustering_tool_moe.labels[0].unsqueeze(-1) if self.clustering_tool_moe is not None else None)
-        mrc.write(out_mrc, vol.astype(np.float32))
+        mrc.write(out_mrc, vol.astype(np.float32),a_pix=self.pixel_size)
 
     # TODO: weights -> model and reconstruct -> volume for output labels?
     def save_model(self):
@@ -1566,3 +1600,17 @@ class ModelTrainer:
                 'output_mask_radius'] = self.output_mask.current_radius
 
         torch.save(saved_objects, out_weights)
+
+    def filter_state_dict(self, state_dict,model_dict):
+        filtered_state_dict = {
+            k: v for k, v in state_dict.items()
+            if k in model_dict and v.shape == model_dict[k].shape
+        }
+
+        # (可选) 打印出被过滤掉的键，方便调试确认
+        dropped_keys = [k for k in state_dict.keys() if k not in filtered_state_dict]
+        if self.accelerator is not None:
+            self.accelerator.print(f"Skipped loading keys due to shape mismatch or missing: {dropped_keys}")
+        else:
+            print(f"Skipped loading keys due to shape mismatch or missing: {dropped_keys}")
+        return filtered_state_dict

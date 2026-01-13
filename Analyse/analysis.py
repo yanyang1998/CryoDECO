@@ -15,7 +15,7 @@ from scipy.spatial.distance import cdist
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from typing import Optional, Union, Tuple, List
-
+import pickle
 # from .analyze import Clustering_tool
 
 logger = logging.getLogger(__name__)
@@ -146,8 +146,72 @@ def analysis_clustering(
 
     if save_path is not None:
         clustering_tool.generate_cs_from_labels(save_path=os.path.join(save_path, 'clustering_cs_star'), labels=labels)
+        save_label_indices(save_dir=save_path,labels=labels)
+
     return labels, centers, clustering_tool.features_data_downsample
 
+
+def save_label_indices(save_dir, labels):
+    """
+    将不同标签对应的索引(ID)以ndarray格式通过pickle分别保存到指定文件夹中。
+
+    参数:
+    save_dir (str): 保存文件的目录路径。
+    labels (numpy.ndarray): 大小为 (N,) 的 int 类型数组，包含标签信息。
+    """
+
+    # 1. 如果保存目录不存在，则创建它
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    # 2. 获取所有唯一的标签
+    unique_labels = np.unique(labels)
+
+
+    # 3. 遍历每个标签，提取索引并保存
+    for label in unique_labels:
+        # 获取当前 label 对应的所有索引 (indices)
+        # np.where 返回的是 tuple，取 [0] 拿到 array
+        indices = np.where(labels == label)[0]
+
+        # 定义保存的文件名，例如 "label_0.pkl", "label_1.pkl"
+        file_name = f"ind_{label}.pkl"
+        file_path = os.path.join(save_dir, file_name)
+
+        # 使用 pickle 保存 ndarray
+        with open(file_path, 'wb') as f:
+            pickle.dump(indices, f)
+
+
+# def cluster_gmm(
+#         z,
+#         K: int,
+#         on_data: bool = True,
+#         random_state: Union[int, np.random.RandomState, None] = None,
+#         **kwargs,
+# ) -> Tuple[np.ndarray, np.ndarray]:
+#     """
+#     Cluster z by a K-component full covariance Gaussian mixture model
+#
+#     Inputs:
+#         z (Ndata x zdim np.array): Latent encodings
+#         K (int): Number of clusters
+#         on_data (bool): Compute cluster center as nearest point on the data manifold
+#         random_state (int or None): Random seed used for GMM clustering
+#         **kwargs: Additional keyword arguments passed to sklearn.mixture.GaussianMixture
+#
+#     Returns:
+#         np.array (Ndata,) of cluster labels
+#         np.array (K x zdim) of cluster centers
+#     """
+#     clf = GaussianMixture(
+#         n_components=K, covariance_type="full", random_state=random_state, **kwargs
+#     )
+#     labels = clf.fit_predict(z)
+#     centers = clf.means_
+#     if on_data:
+#         centers, centers_ind = get_nearest_point(z, centers)
+#     return labels, centers
 
 
 def get_nearest_point(

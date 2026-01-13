@@ -4,6 +4,7 @@ import argparse
 import os
 from Model.configuration import AnalysisConfigurations
 from analyze import ModelAnalyzer
+from Analyse import utils
 from argparse import ArgumentParser
 from cryodata.data_preprocess.mrc_preprocess import raw_csdata_process_from_cryosparc_dir, sort_csdata
 from Data import parse_ctf_csparc, parse_pose_csparc
@@ -12,6 +13,7 @@ from accelerate.utils import InitProcessGroupKwargs
 from datetime import timedelta
 import torch
 import json
+from cryosparc.dataset import Dataset
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
@@ -28,6 +30,7 @@ def settings():
             'processed_data': None,
             'ctf': None,
 
+            'post_training_id': None,
             'labels_evaluate': None,
             'use_lmdb': True,
             'shuffle': True,
@@ -138,6 +141,7 @@ def main():
     parser.add_argument('--ctf', default=None, type=str)
 
     parser.add_argument('--processed_data', default=None, type=str)
+    parser.add_argument('--post_training_id', default=None, type=str)
 
     parser.add_argument('--score_bar', default=None, type=float)
     parser.add_argument('--datadir', default=None, type=str)
@@ -222,6 +226,13 @@ def main():
             configs['train_settings']['ctf'] = None
         else:
             configs['train_settings']['ctf'] = args.ctf
+
+    if args.post_training_id is not None:
+        if args.post_training_id.lower() == 'none' or args.post_training_id.lower() == 'null':
+            configs['train_settings']['post_training_id'] = None
+        else:
+            configs['train_settings']['post_training_id'] = args.post_training_id
+
 
     if args.pose is not None:
         if args.pose.lower() == 'none' or args.pose.lower() == 'null':
@@ -467,6 +478,12 @@ def main():
         accelerator.wait_for_everyone()
         configs['train_settings']['pose'] = pose_pkl_out
 
+    if configs['train_settings']['particles'].endswith('.cs'):
+        cs_data= Dataset.load(configs['train_settings']['particles'])
+        pixel_size = cs_data['blob/psize_A'][0]
+    else:
+        pixel_size=1.0
+
 
     configs['train_settings']['lr'] = configs['train_settings']['lr'] * accelerator.num_processes
     configs['train_settings']['lr_pose_table'] = configs['train_settings'][
@@ -478,10 +495,10 @@ def main():
     configs['train_settings']['min_lr_conf_table'] = configs['train_settings']['min_lr_conf_table'] * accelerator.num_processes
     configs['train_settings']['min_lr_encoder'] = configs['train_settings'][
                                                       'min_lr_encoder'] * accelerator.num_processes
-    accelerator.print(json.dumps(configs, indent=4))
+    accelerator.print(json.dumps(configs, indent=4,default=str))
     trainer = ModelTrainer(configs['outdir'], configs['train_settings'],
                            load=configs['load'] if not configs['analysis_settings']['skip_train'] else True,
-                           accelerator=accelerator)
+                           accelerator=accelerator,pixel_size=pixel_size)
     if not configs['analysis_settings']['skip_train']:
         trainer.train()
 
@@ -493,9 +510,13 @@ def main():
             fld.name: (getattr(anlz_args, fld.name) if hasattr(anlz_args, fld.name) else fld.default)
             for fld in AnalysisConfigurations.fields() if fld.name != 'quick_configs'
         }
-        analyzer = ModelAnalyzer(os.path.join(configs['outdir'], 'out'), anlz_configs, train_configs,
+        if configs['train_settings']['post_training_id'] is not None:
+            anlz_configs['cs_dir_path']= os.path.join(utils.find_target_clustering_dir(os.path.join(configs['outdir'], 'out')),
+                                                      'clustering_cs_star',
+                                          f"cluster_{configs['train_settings']['post_training_id']}.cs")
+        analyzer = ModelAnalyzer(trainer.outdir, anlz_configs, train_configs,
                                  encoder=trainer.model.encoder if configs['train_settings'][
-                                     'use_conf_encoder'] else None, dataset=trainer.data)
+                                     'use_conf_encoder'] else None, dataset=trainer.data, labels_evaluate=trainer.labels_evaluate,pixel_size=pixel_size)
         analyzer.analyze()
 
     accelerator.wait_for_everyone()

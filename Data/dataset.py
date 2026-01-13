@@ -163,11 +163,15 @@ class MRCData(data.Dataset):
                     open(processed_data + '/output_processed_tif_path.data', 'rb'))
                 example = pickle.load(open(self.raw_img_path_list[0], 'rb'))
                 n_particles = len(self.raw_img_path_list)
+            if ind is not None:
+                n_particles = ind.shape[0]
 
             meta_data = CryoMetaData(processed_data_path=processed_data,
                                      )
             id_index_dict, _, id_scores_dict = meta_data.preprocess_trainset_index_pretrain(
                 id_map_for_filtering=meta_data.pose_id_map2, score_bar=score_bar)
+            if ind is not None:
+                id_index_dict,id_scores_dict=filter_dicts_by_indices(id_index_dict,id_scores_dict, ind)
             self.labels_class = meta_data.labels_class
             if meta_data.pose_id_map2 is not None:
                 self.pose_id_map = meta_data.pose_id_map2
@@ -176,6 +180,11 @@ class MRCData(data.Dataset):
             else:
                 self.pose_id_map = {key: key for key in range(n_particles)}
                 self.pose_id_map_reverse = self.pose_id_map
+
+            if ind is not None:
+                self.id_projections_dict = {ind[i]: i for i in range(n_particles)}
+            else:
+                self.id_projections_dict = {i: i for i in range(n_particles)}
 
             self.id_index_dict = id_index_dict
             self.id_scores_dict = id_scores_dict
@@ -370,16 +379,30 @@ class MRCData(data.Dataset):
             img_id = self.protein_id_list[index]
             # index=self.pose_id_map_reverse[index]
             if self.use_gt_pose:
-                index_p = self.pose_id_map[index]
-
+                index_p = self.id_projections_dict[index]
                 if self.use_lmdb:
+                    # key = f"{index}".encode()
+                    # value = self.processed_tif_txn_raw.get(key)
+                    # # data = torch.load(BytesIO(value), weights_only=False)
+                    # data = pickle.loads(value)
+                    # img_processed = data['image_processed']
+                    # img_raw= data['image_raw']
+                    # particle= data['image_FT']
                     img_raw, img_processed, particle = self._get_item_lmdb(index)
+
+                    # img_raw=pickle.loads(self.processed_tif_txn_raw.get(key))
+                    # particle=pickle.loads(self.processed_tif_txn_FT.get(key))
+                    # img_processed=pickle.loads(self.processed_tif_txn_processed.get(key))
                 else:
                     img_processed = pickle.load(open(self.processed_img_path_list[index], 'rb'))
                     particle = pickle.load(open(self.raw_img_path_list[index].replace('raw', 'FT'), 'rb'))
                     img_raw = pickle.load(open(self.raw_img_path_list[index], 'rb'))
-                rotmat_gt = self.pose_list[index_p]
-                trans_gt = np.asarray(self.shift_list[index_p]) * self.D
+                # img_raw_n = (img_raw - self.mean_std_id_dict[img_id]['raw'][0]) / self.mean_std_id_dict[img_id]['raw'][
+                #     1]
+                # # particle_n = (particle - self.mean_std_id_dict[img_id]['FT'][0]) / self.mean_std_id_dict[img_id]['FT'][1]
+                # particle_n = particle  / self.mean_std_id_dict[img_id]['FT'][1]
+                rotmat_gt = self.pose_list[index]
+                trans_gt = np.asarray(self.shift_list[index]) * self.D
                 in_dict['R'] = torch.tensor(rotmat_gt).float()
                 in_dict['t'] = torch.tensor(trans_gt).float()
             else:
@@ -411,8 +434,9 @@ class MRCData(data.Dataset):
             in_dict['y_real_resized'] = self.augmentation_transform(img_processed)
         in_dict['y'] = y
         in_dict['y_real'] = y_real
-        in_dict['index'] = index
-        in_dict['index_p'] = index_p
+        in_dict['index'] = self.id_projections_dict[index]
+        # in_dict['index_p'] = index_p
+        in_dict['index_p'] = self.id_projections_dict[index]
         return in_dict
 
     def _get_env(self, lmdb_path):
@@ -692,3 +716,34 @@ class rondom_pixel_lost(object):
         # return PIL.Image.fromarray(img)
         return img
 
+
+
+def filter_dicts_by_indices(id_index_dict, id_scores_dict, ind):
+    """
+    使用 ind 过滤 index 字典，并同步过滤 scores 字典。
+    """
+    # 结果容器
+    filtered_index_dict = {}
+    filtered_scores_dict = {}
+
+    # 遍历字典 (假设两个字典 keys 相同)
+    for key in id_index_dict.keys():
+        # 1. 获取当前 key 对应的列表，并转为 numpy 数组以便处理
+        indices = np.array(id_index_dict[key])
+        scores = np.array(id_scores_dict[key])
+
+        # 2. 生成布尔掩码 (Mask)
+        # np.isin(element, test_elements) 检查 indices 中的元素是否在 ind 中
+        # 返回一个与 indices 形状相同的布尔数组
+        mask = np.isin(indices, ind)
+
+        # 3. 利用掩码进行同步过滤
+        # 只有 mask 为 True 的位置会被保留
+        kept_indices = indices[mask]
+        kept_scores = scores[mask]
+
+        # 4. 存回结果字典 (如果原要求value是list，这里转回list；如果接受array可省略 .tolist())
+        filtered_index_dict[key] = kept_indices.tolist()
+        filtered_scores_dict[key] = kept_scores.tolist()
+
+    return filtered_index_dict, filtered_scores_dict

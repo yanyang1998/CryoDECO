@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
+import torch.nn.functional as F
 
 from cryodata.data_preprocess import mrc
 from Analyse import analysis, utils
@@ -20,7 +21,7 @@ from Pose.lattice import Lattice
 
 from sklearn.cluster import MiniBatchKMeans, Birch, AgglomerativeClustering
 # from sklearn.cluster import MiniBatchKMeans, Birch
-from munkres import Munkres
+# from munkres import Munkres
 from sklearn import metrics
 from sklearn.decomposition import PCA
 import pickle
@@ -61,19 +62,14 @@ class Clustering_tool:
         self.clustering_type = clustering_type
         self.features_data_downsample = None
         self.current_inds = range(data_num)
+        self.cs_data = None
         if cs_path is not None:
-            if os.path.exists(os.path.join(os.path.dirname(cs_path), 'new_particles.cs')):
+            if  cs_path.endswith('.cs') and os.path.exists(cs_path):
+                self.cs_data = Dataset.load(cs_path)
+            elif os.path.exists(os.path.join(os.path.dirname(cs_path), 'new_particles.cs')):
                 cs_path = os.path.join(os.path.dirname(cs_path), 'new_particles.cs')
-            elif cs_path.endswith('.cs'):
-                cs_path = cs_path
-            else:
-                cs_path = None
-                self.cs_data = None
-            if cs_path is not None:
-                cs_data = Dataset.load(cs_path)
-                self.cs_data = cs_data
-        else:
-            self.cs_data = None
+                self.cs_data = Dataset.load(cs_path)
+
 
         # if labels_true is not None:
         #     self.labels_true = labels_true
@@ -363,13 +359,18 @@ def get_centers_from_labels_averages(labels, features_data):
 
 
 def best_map(L1, L2):
-    # L1 should be the labels and L2 should be the my_clustering number we got
-    Label1 = np.unique(L1)  # 去除重复的元素，由小大大排列
-    nClass1 = len(Label1)  # 标签的大小
+    """
+    L1: Ground Truth (真实标签)
+    L2: Clustering Result (预测聚类结果)
+    """
+    Label1 = np.unique(L1)
+    nClass1 = len(Label1)
     Label2 = np.unique(L2)
     nClass2 = len(Label2)
-    nClass = np.maximum(nClass1, nClass2)
-    G = np.zeros((nClass, nClass))
+
+    # 1. 计算关联矩阵 (Contingency Matrix)
+    # G[i, j] 表示真实类 i 与 预测类 j 的重叠样本数
+    G = np.zeros((nClass1, nClass2))
     for i in range(nClass1):
         ind_cla1 = L1 == Label1[i]
         ind_cla1 = ind_cla1.astype(float)
@@ -377,13 +378,21 @@ def best_map(L1, L2):
             ind_cla2 = L2 == Label2[j]
             ind_cla2 = ind_cla2.astype(float)
             G[i, j] = np.sum(ind_cla2 * ind_cla1)
-    m = Munkres()
-    index = m.compute(-G.T)
-    index = np.asarray(index)
-    c = index[:, 1]
-    newL2 = np.zeros(L2.shape)
-    for i in range(nClass2):
-        newL2[L2 == Label2[i]] = Label1[c[i]]
+
+    # 2. 使用匈牙利算法进行最优匹配
+    # linear_sum_assignment 求的是最小代价，所以我们传入 -G 来求最大重叠
+    # row_ind 是 L1 (真实) 的索引，col_ind 是 L2 (预测) 的索引
+    row_ind, col_ind = linear_sum_assignment(-G)
+
+    # 3. 构建重映射后的预测标签
+    # 初始化为 -1 或者其他非 label 值，防止未匹配的类偶然算对
+    newL2 = np.zeros(L2.shape) - 1
+
+    for i in range(len(row_ind)):
+        # row_ind[i] 是真实类的索引，col_ind[i] 是匹配到的预测类的索引
+        # 将原预测标签 (Label2[col_ind[i]]) 替换为对应的真实标签 (Label1[row_ind[i]])
+        newL2[L2 == Label2[col_ind[i]]] = Label1[row_ind[i]]
+
     return newL2
 
 
@@ -392,37 +401,58 @@ def acc_nmi(labels_p, labels_t, current_inds=None):
         labels_p = labels_p.cpu().numpy()
     if isinstance(labels_t, torch.Tensor):
         labels_t = labels_t.cpu().numpy()
+
+    # 如果有特定索引，先筛选
     if current_inds is not None:
         labels_p = labels_p[current_inds]
         labels_t = labels_t[current_inds]
+
+    # 获取对齐后的标签
     label_same = best_map(labels_t, labels_p)
+
+    # 计算 ACC
     count = np.sum(labels_t[:] == label_same[:])
     acc = count.astype(float) / (len(labels_t))
-    nmi = metrics.normalized_mutual_info_score(labels_t, label_same)
+
+    # 计算 NMI
+    # 注意：NMI 不需要标签对齐，直接算即可，但为了保持逻辑一致，用 label_same 也可以
+    nmi = metrics.normalized_mutual_info_score(labels_t, labels_p)
+
     return acc, nmi
 
 
 def calculate_knn(train_features=None, train_labels=None, test_features=None, test_labels=None,
-                  num_classes=None, k=5, T=1, mask_start_index=None):
-    # import torch
-    # 检查输入
+                  num_classes=None, k=5, T=0.07, mask_start_index=None):
+    """
+    Args:
+        T: Temperature for weighted voting (default usually 0.07 or 0.1 for soft voting)
+    """
+    # 1. 基础检查
     if any(v is None for v in [train_features, train_labels, test_features, test_labels, num_classes]):
         raise ValueError("Essential parameters must be provided")
 
-    # 转换为张量并移动到GPU
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    #
-    # train_features = torch.from_numpy(train_features).to(device)
-    # train_labels = torch.from_numpy(np.asarray(train_labels)).long().to(device)
-    # test_features = torch.from_numpy(test_features).to(device)
-    # test_labels = torch.from_numpy(np.asarray(test_labels)).long().to(device)
+    # 2. 确保标签在合法范围内 (关键修复)
+    # 如果发现标签超出 num_classes，会触发断言，避免后续 scatter 莫名崩溃
+    max_label = train_labels.max().item()
+    if num_classes< max_label:
+        num_classes = max_label +1
+    # assert max_label < num_classes, \
+    #     f"Label index {max_label} exceeds num_classes-1 ({num_classes - 1}). Please increase num_classes."
 
-    # 预计算转置矩阵
+    # 3. 特征归一化 (关键优化)
+    # k-NN 通常基于余弦相似度，需要先对特征进行 L2 归一化
+    train_features = F.normalize(train_features, dim=1, p=2)
+    test_features = F.normalize(test_features, dim=1, p=2)
+
+    # 预计算转置
     train_features_t = train_features.T
 
     top1, top5, top10, total = 0.0, 0.0, 0.0, 0
     num_test = test_labels.shape[0]
-    chunk_size = 4000  # 可以根据GPU内存调整
+    chunk_size = 4000
+
+    # 放到 GPU 上 (假设传入的已经是 tensor，如果不是请取消下面的注释)
+    device = train_features.device
 
     with torch.no_grad():
         for idx in range(0, num_test, chunk_size):
@@ -431,37 +461,64 @@ def calculate_knn(train_features=None, train_labels=None, test_features=None, te
             targets = test_labels[idx:end_idx]
             batch_size = targets.shape[0]
 
-            # 计算相似度
+            # 计算相似度 (已归一化，此时 mm 等价于余弦相似度)
             similarity = torch.mm(features, train_features_t)
 
-            # 掩码处理
+            # 掩码处理 (通常用于自监督学习评估，去除自身)
             if mask_start_index is not None:
                 valid_start = mask_start_index + idx
                 valid_end = mask_start_index + end_idx
-                if valid_end > train_labels.shape[0]:
-                    raise IndexError("Mask indices exceed training set size")
 
-                mask = torch.ones_like(similarity, dtype=torch.bool)
-                mask_indices = torch.arange(valid_start, valid_end, device=train_features.device).unsqueeze(1)
-                mask.scatter_(1, mask_indices, False)
-                similarity.masked_fill_(~mask, float('-inf'))
+                # 确保 mask 索引不越界
+                if valid_end <= train_labels.shape[0]:
+                    mask = torch.ones_like(similarity, dtype=torch.bool)
+                    # 创建对角线索引
+                    mask_indices = torch.arange(valid_start, valid_end, device=device).unsqueeze(1)
+                    # 注意：这里假设 test set 是 train set 的子集且顺序对应
+                    # scatter 的 dim=1，索引值必须 < train_features.shape[0]
+                    mask.scatter_(1, mask_indices, False)
+                    similarity.masked_fill_(~mask, float('-inf'))
 
-            # Top-k检索
+            # Top-k 检索
+            # indices: [batch_size, k]
             similarities, indices = similarity.topk(k, largest=True, sorted=True)
-            retrieved_labels = train_labels[indices]
 
-            # 加权投票
-            weights = (similarities / T).exp().unsqueeze(-1)
-            one_hot = torch.zeros(batch_size, k, num_classes, device=train_features.device)
+            # 获取检索到的 Neighbors 的标签
+            retrieved_labels = train_labels[indices]  # [batch_size, k]
+
+            # 加权投票 (Soft Voting)
+            # 这里的 T 很重要，控制相似度的分布尖锐程度
+            weights = (similarities / T).exp().unsqueeze(-1)  # [batch_size, k, 1]
+
+            # 初始化 one_hot 投票箱
+            one_hot = torch.zeros(batch_size, k, num_classes, device=device)
+
+            # Scatter 投票
+            # 这里的 retrieved_labels.unsqueeze(-1) 必须 < num_classes，否则崩溃
             one_hot.scatter_(2, retrieved_labels.unsqueeze(-1), 1)
+
+            # 聚合权重: [batch_size, num_classes]
             probs = (one_hot * weights).sum(dim=1)
 
             # 计算准确率
-            _, preds = probs.topk(min(k, num_classes), dim=1)
-            correct = preds.eq(targets.view(-1, 1))
-            top1 += correct[:, 0].sum().item()
-            top5 += correct[:, :min(5, k, num_classes)].sum().item()
-            top10 += correct[:, :min(10, k, num_classes)].sum().item()
+            # 这里的 topk 取 min(20, num_classes) 是为了保证即使 k=5 也能算 Top10 Acc
+            # 只要 probs 中非零项都在前 k 个，结果是一样的；
+            # 但如果 k 较小，Top10 等于 Top-k，这是 k-NN 的固有特性。
+            _, preds = probs.topk(min(20, num_classes), dim=1)
+
+            # 扩展 targets 以便广播比较
+            targets_view = targets.view(-1, 1)
+            correct = preds.eq(targets_view)
+
+            # 统计
+            top1 += correct[:, :1].sum().item()
+
+            # 动态处理 k 小于 5 或 10 的情况，防止切片报错
+            if num_classes >= 5:
+                top5 += correct[:, :5].sum().item()
+            if num_classes >= 10:
+                top10 += correct[:, :10].sum().item()
+
             total += batch_size
 
     return (top1 / total) * 100, (top5 / total) * 100, (top10 / total) * 100
@@ -593,7 +650,7 @@ class VolumeGenerator:
         self.radius_mask = radius_mask
         self.data_norm = data_norm
 
-    def gen_volumes(self, outdir, z_values, suffix=None, route_labels=None, intermediate_features=None):
+    def gen_volumes(self, outdir, z_values, suffix=None, route_labels=None, intermediate_features=None,pixel_size=1.0):
         """
         z_values: [nz, z_dim]
         """
@@ -619,7 +676,7 @@ class VolumeGenerator:
             if self.invert:
                 vol *= -1
 
-            mrc.write(out_mrc, vol.astype(np.float32))
+            mrc.write(out_mrc, vol.astype(np.float32),a_pix=pixel_size)
 
 
 class ModelAnalyzer:
@@ -652,7 +709,7 @@ class ModelAnalyzer:
         return epoch
 
     def __init__(self,
-                 traindir: str, config_vals: dict, train_config_vals: dict, encoder=None, dataset=None) -> None:
+                 traindir: str, config_vals: dict, train_config_vals: dict, encoder=None, dataset=None,labels_evaluate=None,pixel_size=1.0) -> None:
         self.logger = logging.getLogger(__name__)
 
         self.configs = AnalysisConfigurations(**config_vals)
@@ -660,6 +717,7 @@ class ModelAnalyzer:
         self.traindir = traindir
         self.encoder = encoder
         self.dataset = dataset
+        self.pixel_size = pixel_size
 
         # find how input data was normalized for training
         self.out_cfgs = {k: v for k, v in train_config_vals.items() if k != 'training'}
@@ -737,13 +795,15 @@ class ModelAnalyzer:
         else:
             self.data_resample_id = None
 
-        if self.train_configs.labels_evaluate is not None or (
-                self.train_configs.cluster_num_evaluate is not None and self.train_configs.cluster_num_evaluate > 0):
-            if self.train_configs.labels_evaluate is not None and os.path.exists(self.train_configs.labels_evaluate):
-                # labels_evaluate = np.array( utils.load_pkl(self.train_configs.labels_evaluate))[self.keep_mask]
-                labels_evaluate = np.array(utils.load_pkl(self.train_configs.labels_evaluate))[self.ind_last_epoch]
-            else:
-                labels_evaluate = None
+        if labels_evaluate is None:
+            if self.train_configs.labels_evaluate is not None or (
+                    self.train_configs.cluster_num_evaluate is not None and self.train_configs.cluster_num_evaluate > 0):
+                if self.train_configs.labels_evaluate is not None and os.path.exists(self.train_configs.labels_evaluate):
+                    # labels_evaluate = np.array( utils.load_pkl(self.train_configs.labels_evaluate))[self.keep_mask]
+                    labels_evaluate = np.array(utils.load_pkl(self.train_configs.labels_evaluate))[self.ind_last_epoch]
+                else:
+                    labels_evaluate = None
+        if labels_evaluate is not None:
             self.clustering_tool_evaluate = Clustering_tool(data_num=self.n_samples, n_clusters=max(
                 labels_evaluate) + 1 if labels_evaluate is not None else self.train_configs.cluster_num_evaluate,
                                                             # k_init=self.train_configs.k_init,
@@ -817,14 +877,14 @@ class ModelAnalyzer:
                 acc, nmi, ari, ami = self.clustering_tool_evaluate.get_clustering_acc()
                 knn5_top1, knn5_top5, knn10_top1, knn10_top5, knn10_top10 = self.clustering_tool_evaluate.get_knn(
                     self.z, device=self.device, sample_ratio=1000)
-                self.logger.info(
+                print(
                     f"Epoch: {self.epoch} knn5 top1: {knn5_top1} knn5 top5: {knn5_top5} knn10 top1: {knn10_top1} knn10 top5: {knn10_top5} knn10 top10: {knn10_top10}")
-                self.logger.info(f"Epoch: {self.epoch} clustering acc: {acc} nmi: {nmi}")
-                self.logger.info(f"Epoch: {self.epoch} clustering ari: {ari} ami: {ami}")
+                print(f"Epoch: {self.epoch} clustering acc: {acc} nmi: {nmi}")
+                print(f"Epoch: {self.epoch} clustering ari: {ari} ami: {ami}")
 
-            self.logger.info(f"Epoch: {self.epoch} class_num_evaluate: {class_num_evaluate}")
+            print(f"Epoch: {self.epoch} class_num_evaluate: {class_num_evaluate}")
 
-        self.logger.info('Done')
+        print('Done')
 
     def analyze_z1(self) -> None:
         """Plotting and volume generation for 1D z"""
@@ -865,9 +925,9 @@ class ModelAnalyzer:
         zdim = z_resample.shape[1]
 
         # Principal component analysis
-        self.logger.info('Performing principal component analysis...')
+        print('Performing principal component analysis...')
         pc, pca = analysis.run_pca(z_resample)
-        self.logger.info('Generating volumes...')
+        print('Generating volumes...')
 
         for i in range(self.configs.pc):
             start, end = np.percentile(pc[:, i], (5, 95))
@@ -885,7 +945,7 @@ class ModelAnalyzer:
             self.generate_vols(volpath, z_pc, route_labels=self.get_route(z_pc))
 
         # kmeans clustering
-        self.logger.info(f'{self.configs.clustering_type} clustering...')
+        print(f'{self.configs.clustering_type} clustering...')
         k = min(self.configs.k_num, self.n_samples)
         if self.n_samples < self.configs.k_num:
             self.logger.warning(
@@ -1025,7 +1085,7 @@ class ModelAnalyzer:
                 plt.close()
 
         # Plot kmeans sample points
-
+        # colors = analysis._get_chimerax_colors(k)
         colors = analysis._get_chimerax_colors(k + 1)[1:]  # avoid 'gray' for cluster 0
 
         g = analysis.scatter_annotate(
@@ -1188,7 +1248,7 @@ class ModelAnalyzer:
         else:
             intermidiate_features = None
         self.vg.gen_volumes(outdir, z_values, suffix=suffix, route_labels=route_labels,
-                            intermediate_features=intermidiate_features)
+                            intermediate_features=intermidiate_features,pixel_size=self.pixel_size)
 
     def get_route(self, z):
         if self.current_centers is not None:

@@ -227,3 +227,55 @@ def run_command(cmd: str) -> tuple[str, str]:
 
     return cmd_out.stdout, cmd_out.stderr
 
+
+def get_latest_dir(parent_dir, prefix):
+    """
+    在 parent_dir 中查找以 prefix 开头且创建时间最新的文件夹。
+    如果找不到，返回 None。
+    """
+    # 1. 确保父目录存在
+    if not os.path.exists(parent_dir):
+        print(f"Load path cannot be found: {parent_dir}")
+        return None
+
+    # 2. 列出所有候选项 (完整路径)
+    # 筛选条件: 以 prefix 开头 且 是一个文件夹
+    candidates = []
+    for item in os.listdir(parent_dir):
+        full_path = os.path.join(parent_dir, item)
+        if item.startswith(prefix) and os.path.isdir(full_path):
+            candidates.append(full_path)
+
+    # 3. 如果没有找到匹配的文件夹，返回 None
+    if not candidates:
+        return None
+
+    # 4. 根据创建时间 (getctime) 找到最新的文件夹
+    # 注意: 在某些 Linux 系统上 getctime 可能是元数据修改时间，
+    # 如果你想找"最后修改内容"的时间，可以使用 os.path.getmtime
+    latest_dir = max(candidates, key=os.path.getctime)
+
+    return latest_dir
+
+
+def find_target_clustering_dir(base_path):
+    """
+    1. 找到 base_path 下最新的 analysis_*
+    2. 找到该目录下最新的 clustering_*
+    3. 返回完整路径
+    """
+    # --- 第一步：找 analysis_ ---
+    latest_analysis = get_latest_dir(base_path, "analysis_")
+
+    if latest_analysis is None:
+        raise FileNotFoundError(f"Cannot find the directory named with 'analysis_' in {base_path}")
+
+    # print(f"找到最新的分析目录: {latest_analysis}")
+
+    # --- 第二步：找 clustering_ ---
+    latest_clustering = get_latest_dir(latest_analysis, "clustering")
+
+    if latest_clustering is None:
+        raise FileNotFoundError(f"Cannot find the directory named with 'clustering' in {latest_analysis}")
+
+    return latest_clustering

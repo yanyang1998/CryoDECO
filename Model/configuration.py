@@ -174,6 +174,9 @@ class TrainingConfigurations(_BaseConfigurations):
     no_trans: bool = False
     labels_evaluate: str = None
 
+
+    post_training_id: str=None
+
     # pretrain with processed data
     processed_data: str = None
     shuffle_type: str='all'
@@ -185,6 +188,7 @@ class TrainingConfigurations(_BaseConfigurations):
     refine_gt_poses: bool = False
     use_gt_trans: bool = False
     load: str = None
+    resume: bool = False
     initial_conf: str = None
 
     # logging and verbosity
