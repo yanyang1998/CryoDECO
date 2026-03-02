@@ -12,7 +12,7 @@ We recommend installing CryoDECO in a clean Conda environment to avoid dependenc
     conda activate cryoDECO
     
     # 2. Clone the repository
-    git clone https://github.com/yanyang1998/CryoSolver.git
+    git clone https://github.com/yanyang1998/CryoDECO.git
     cd cryoDECO/
     
     # 3. Install dependencies
@@ -186,13 +186,19 @@ CryoDECO adapts code from [DrgnAI](https://github.com/ml-struct-bio/drgnai). We 
 [//]: # (## 📖 Reference ##)
 If you use CryoDECO in your research, please cite:
 ```bibtex
-@article{,
-  title={CryoDECO: Deconstructing Compositional and Conformational Heterogeneity in Cryo-EM with Foundation Model Priors},
-  url = {https://langtaosha.org.cn/index.php/lts/preprint/view/75},
-  doi = {10.65215/LTSpreprints.2025.12.30.000075},
-  journal = {浪淘沙预印本平台},
-  author = {Yan, Yang and Xi, Yanwanyu and Fan, Shiqi and Tang, Ziyun and Yuan, Fajie and Shen, Huaizong},
-  year = {2025},
+@article{yan_cryodeco_2026,
+	chapter = {Preprints},
+	title = {{CryoDECO}: {Deconstructing} {Extreme} {Compositional} and {Conformational} {Heterogeneity} in {Cryo}-{EM} via {Foundation} {Model} {Priors}},
+	url = {https://doi.org/10.65215/LTSpreprints.2025.12.30.000075},
+	doi = {10.65215/LTSpreprints.2025.12.30.000075},
+	abstract = {Resolving compositional and conformational heterogeneity remains the fundamental bottleneck in cryo-electron microscopy (cryo-EM). This challenge involves a circular dependency: accurate particle classification requires reliable 3D structural templates, yet template reconstruction demands high-fidelity classification. Current ab initio methods typically approach this as a joint optimization problem from a tabula rasa initialization, which frequently leads to optimization collapse when samples exhibit extreme complexity. Here, we present CryoDECO, an autoencoder framework that breaks this deadlock by integrating representation priors from pretrained cryo-EM foundation models. By projecting particle images onto a semantically structured manifold, CryoDECO effectively disentangles particle classification from structural reconstruction. We demonstrate that this prior-informed strategy robustly resolves extreme compositional heterogeneity, successfully classifying 100 distinct structures from a simulated mixture, and maps complex, continuous conformational landscapes. Applied to real-world datasets and unpurified native cell extracts, CryoDECO enables "Panoramic Structural Biology"—a high-throughput paradigm where in silico purification replaces laborious biochemical stabilization, allowing the simultaneous determination of diverse molecular machineries and their dynamic states.},
+	language = {en},
+	urldate = {2026-01-03},
+	journal = {LangTaoSha Preprint Server},
+	author = {Yan, Yang and Xi, Yanwanyu and Fan, Shiqi and Wang, Yifei and Tang, Ziyun and Yuan, Fajie and Shen, Huaizong},
+	year = {2026},
+	keywords = {Compositional Heterogeneity, Conformational Heterogeneity, Cryo-EM, CryoDECO, Systems Structural Biology},
+}
 ```
 }
 
