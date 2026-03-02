@@ -71,14 +71,23 @@ def main(args: argparse.Namespace) -> None:
 
     # write output
     logger.info(f"Writing {args.o}")
-    pose_path = os.path.join(args.o, "pose_list.data")
-    trans_path = os.path.join(args.o, "shift_list.data")
+    # pose_path = os.path.join(args.o, "pose_list.data")
+    # trans_path = os.path.join(args.o, "shift_list.data")
+    # with open(pose_path,"wb") as f:
+    #     pickle.dump(rot, f)
+    #
+    # with open(trans_path, "wb") as f:
+    #     pickle.dump(trans, f)
+    # with open(args.o, "wb") as f:
+    #     pickle.dump((rot, trans), f)
+    save_pose(rot, trans, args.o)
+
+
+def save_pose(rot, trans,save_path):
+    pose_path = os.path.join(save_path, "pose_list.data")
+    trans_path = os.path.join(save_path, "shift_list.data")
     with open(pose_path,"wb") as f:
         pickle.dump(rot, f)
 
     with open(trans_path, "wb") as f:
         pickle.dump(trans, f)
-    # with open(args.o, "wb") as f:
-    #     pickle.dump((rot, trans), f)
-
-

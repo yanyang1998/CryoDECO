@@ -1418,8 +1418,8 @@ def merge_clusters(
 
     k_current = len(current_centers_dict)
     if k_current < k_new:
-        raise ValueError(
-            f"The initial number of clusters {k_current} is less than the target k_new={k_new}, cannot merge.")
+        print(f"Warning: Only {k_current} valid clusters found, less than target k_new={k_new}. Returning current clusters without merging.")
+        return current_labels, np.array([current_centers_dict[c] for c in valid_clusters])
 
     clusters = list(current_centers_dict.keys())
     n_clusters = len(clusters)

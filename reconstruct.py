@@ -92,7 +92,7 @@ class ModelTrainer:
 
 
     def __init__(self,
-                 outdir: str, config_vals: dict[str, Any], load: bool = False, accelerator=None,pixel_size=1.0) -> None:
+                 outdir: str, config_vals: dict[str, Any], load: bool = False, resume: bool = False, accelerator=None,pixel_size=1.0) -> None:
         """Initialize model parameters and variables.
 
         Arguments
@@ -100,6 +100,7 @@ class ModelTrainer:
         outdir:         Location on file where model results will be saved.
         config_vals:    Parsed model parameter values provided by the user.
         load:           Load model from last saved epoch found in this output folder?
+        resume:         Resume training with optimizer states from checkpoint?
         """
 
         self.logger = logging.getLogger(__name__)
@@ -148,6 +149,11 @@ class ModelTrainer:
 
         if self.post_training:
             self.outdir = os.path.join(self.outdir, f"post_train_{config_vals['post_training_id']}", "out")
+
+        # Store load and resume flags in config_vals
+        config_vals['load'] = load
+        config_vals['resume'] = resume
+
         self.configs = TrainingConfigurations(**config_vals)
 
         # take care of existing output directories; if we are loading from a saved
@@ -491,8 +497,8 @@ class ModelTrainer:
 
                 self.accelerator.print(msg)
 
-            # filtered_state_dict_decoder = self.filter_state_dict(checkpoint['hypervolume_state_dict'],self.hypervolume.state_dict())
-            # self.accelerator.print(self.hypervolume.load_state_dict(filtered_state_dict_decoder, strict=False))
+            filtered_state_dict_decoder = self.filter_state_dict(checkpoint['hypervolume_state_dict'],self.hypervolume.state_dict())
+            self.accelerator.print(self.hypervolume.load_state_dict(filtered_state_dict_decoder, strict=False))
             self.start_epoch = checkpoint['epoch'] + 1 if not self.post_training else 0
 
             if 'output_mask_radius' in checkpoint:
@@ -1467,13 +1473,17 @@ class ModelTrainer:
                 rotmat_gt=torch.tensor(utils.load_pkl(pose_path)).float()
                 if self.index is not None:
                     rotmat_gt = rotmat_gt[self.index]
+            else:
+                self.accelerator.print(
+                    f"Warning: pose path {pose_path} does not exist. "
+                    f"Will not show pose summary.")
             if os.path.exists(trans_path):
                 trans_gt=torch.tensor(utils.load_pkl(trans_path)).float()* self.resolution
                 if self.index is not None:
                     trans_gt = trans_gt[self.index]
 
 
-            rotmat_gt = rotmat_gt[mask_tilt_idx]
+            rotmat_gt = rotmat_gt[mask_tilt_idx] if rotmat_gt is not None else None
             trans_gt = (trans_gt[mask_tilt_idx] if trans_gt is not None
                         else None)
 
