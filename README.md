@@ -200,5 +200,4 @@ If you use CryoDECO in your research, please cite:
 	keywords = {Compositional Heterogeneity, Conformational Heterogeneity, Cryo-EM, CryoDECO, Systems Structural Biology},
 }
 ```
-}
 
