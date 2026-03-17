@@ -165,6 +165,7 @@ def main():
 
     parser.add_argument('--lazy', type=lambda x: x.lower() == 'true', default=None)
     parser.add_argument('--load', type=lambda x: x.lower() == 'true', default=None)
+    parser.add_argument('--resume', type=lambda x: x.lower() == 'true', default=None)
     # parser.add_argument('--finetune_vit_encoder', type=lambda x: x.lower() == 'true', default=None)
     parser.add_argument('--use_generated_features', type=lambda x: x.lower() == 'true', default=None)
     parser.add_argument('--skip_train', type=lambda x: x.lower() == 'true', default=None)
@@ -346,6 +347,12 @@ def main():
         configs['train_settings']['conf_encoder_optimizer_type'] = args.conf_encoder_optimizer_type
     if args.lazy is not None:
         configs['train_settings']['lazy'] = args.lazy
+    if args.resume is not None:
+        configs['resume'] = args.resume
+        # When resuming, automatically enable loading
+        if args.resume:
+            configs['load'] = True
+
     if args.load is not None:
         if not args.load:
             configs['load'] = None
@@ -455,28 +462,32 @@ def main():
         else:
             configs['train_settings']['z_dim'] = configs['train_settings']['conf_table_dim']
 
-    if configs['train_settings']['pose'] is not None:
-        configs['train_settings']['use_gt_poses'] = True
-        configs['train_settings']['use_gt_trans'] = True
-    if ((configs['train_settings']['use_gt_poses'] == True or configs['train_settings']['use_gt_trans'] == True) and configs['train_settings']['pose'] is None):
+    # if configs['train_settings']['pose'] is not None:
+    #     configs['train_settings']['use_gt_poses'] = True
+    #     configs['train_settings']['use_gt_trans'] = True
+    if (configs['train_settings']['use_gt_poses'] == True or configs['train_settings']['use_gt_trans'] == True):
         pose_pkl_out = configs['train_settings']['processed_data']
         if accelerator.is_main_process:
-
-            if not configs['train_settings']['particles'].endswith('.cs'):
-                configs['train_settings']['particles'] = os.path.join(
-                    os.path.dirname(configs['train_settings']['particles']),
-                    'new_particles.cs')
-            if configs['train_settings']['pose_D'] is None:
-                configs['train_settings']['pose_D'] = cs_data['blob/shape'].tolist()[0][0]
-            if not os.path.exists(os.path.dirname(pose_pkl_out)):
-                os.makedirs(os.path.dirname(pose_pkl_out))
-            args = parse_pose_csparc.add_args(argparse.ArgumentParser()).parse_args(
-                [configs['train_settings']['particles'], "-o", pose_pkl_out, "-D",
-                 str(configs['train_settings']['pose_D'])]
-            )
-            parse_pose_csparc.main(args)
+            if  configs['train_settings']['pose'] is not None:
+                pose_data=pickle.load(open(configs['train_settings']['pose'], "rb"))
+                parse_pose_csparc.save_pose(rot=pose_data[0],trans=pose_data[1],save_path=pose_pkl_out)
+            else:
+                if not configs['train_settings']['particles'].endswith('.cs'):
+                    configs['train_settings']['particles'] = os.path.join(
+                        os.path.dirname(configs['train_settings']['particles']),
+                        'new_particles.cs')
+                if configs['train_settings']['pose_D'] is None:
+                    configs['train_settings']['pose_D'] = cs_data['blob/shape'].tolist()[0][0]
+                if not os.path.exists(os.path.dirname(pose_pkl_out)):
+                    os.makedirs(os.path.dirname(pose_pkl_out))
+                args = parse_pose_csparc.add_args(argparse.ArgumentParser()).parse_args(
+                    [configs['train_settings']['particles'], "-o", pose_pkl_out, "-D",
+                     str(configs['train_settings']['pose_D'])]
+                )
+                parse_pose_csparc.main(args)
         accelerator.wait_for_everyone()
         configs['train_settings']['pose'] = pose_pkl_out
+        # print(configs['train_settings']['pose'])
 
     if configs['train_settings']['particles'].endswith('.cs'):
         cs_data= Dataset.load(configs['train_settings']['particles'])
@@ -498,6 +509,7 @@ def main():
     accelerator.print(json.dumps(configs, indent=4,default=str))
     trainer = ModelTrainer(configs['outdir'], configs['train_settings'],
                            load=configs['load'] if not configs['analysis_settings']['skip_train'] else True,
+                           resume=configs.get('resume', False),
                            accelerator=accelerator,pixel_size=pixel_size)
     if not configs['analysis_settings']['skip_train']:
         trainer.train()
