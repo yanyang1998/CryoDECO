@@ -1,111 +1,120 @@
-# CryoDECO: Deconstructing Compositional and Conformational Heterogeneity in Cryo-EM with Foundation Model Priors #
+# CryoDECO
 
-CryoDECO is an _ab initio_ heterogeneous reconstruction algorithm designed to resolve complex structural mixtures in cryo-EM data. By leveraging structural priors from the pre-trained [Cryo-IEF](https://github.com/westlake-repl/Cryo-IEF) foundation model, CryoDECO bypasses the random initialization bottleneck common in traditional deep learning approaches, 
-enabling robust classification of both compositional and conformational heterogeneity.
-## 📑 Installation ##
+**Deconstructing Compositional and Conformational Heterogeneity in Cryo-EM with Foundation Model Priors**
+
+[![License](https://img.shields.io/badge/license-see%20LICENSE-green.svg)](LICENSE.txt)
+[![Preprint](https://img.shields.io/badge/preprint-LangTaoSha-orange.svg)](https://doi.org/10.65215/LTSpreprints.2025.12.30.000075)
+
+CryoDECO is an *ab initio* heterogeneous reconstruction algorithm designed to resolve complex structural mixtures in cryo-EM data. By leveraging structural priors from the pre-trained [Cryo-IEF](https://github.com/westlake-repl/Cryo-IEF) foundation model, CryoDECO bypasses the random initialization bottleneck common in traditional deep learning approaches, enabling robust classification of both compositional and conformational heterogeneity.
+
+---
+
+## Table of Contents
+
+1. [Installation](#installation)
+2. [Configuration & Parameters](#configuration--parameters)
+3. [Usage](#usage)
+4. [Analysis & Output](#analysis--output)
+5. [Acknowledgments](#acknowledgments)
+6. [Citation](#citation)
+
+---
+
+## Installation
 
 We recommend installing CryoDECO in a clean Conda environment to avoid dependency conflicts.
 
 ```bash
-    # 1. Create and activate a virtual environment
-    conda create --name cryoDECO python=3.9
-    conda activate cryoDECO
-    
-    # 2. Clone the repository
-    git clone https://github.com/yanyang1998/CryoDECO.git
-    cd cryoDECO/
-    
-    # 3. Install dependencies
-    pip install -r requirements.txt
+# 1. Create and activate a virtual environment
+conda create --name cryoDECO python=3.9
+conda activate cryoDECO
+
+# 2. Clone the repository
+git clone https://github.com/yanyang1998/CryoDECO.git
+cd CryoDECO/
+
+# 3. Install dependencies
+pip install -r requirements.txt
 ```
 
-[//]: # (## 💻 Requirements ##)
+> **[CryoData](https://github.com/yanyang1998/cryoief-data)** is used internally for cryo-EM data preprocessing (normalization, LMDB conversion, and PyTorch integration). It is included in `requirements.txt` and installed automatically.
 
-[//]: # ()
-[//]: # (- python==3.9)
+---
 
-[//]: # ()
-[//]: # (- torch==2.8.0)
+## Configuration & Parameters
 
-[//]: # (  )
-[//]: # (- torchvision==0.23.0)
+### Required Parameters
 
-[//]: # ()
-[//]: # (- cryodrgn==3.4.4)
+| Parameter | Description |
+|---|---|
+| `particles` | Path to the CryoSPARC job directory (supports `Downsample`, `Extracted Particles`, `Restack Particles`, and `Particle Sets` jobs) |
+| `outdir` | Directory where all output results will be saved |
+| `pretrained_model_path` | Path to Cryo-IEF model weights ([download from HuggingFace](https://huggingface.co/westlake-repl/Cryo-IEF/tree/main/cryo_ief_checkpoint/cryo_ief_v1.5_vit_s)) |
 
-[//]: # ()
-[//]: # (- lmdb==1.7.3)
+> **Recommendation:** For efficient training and inference, we strongly recommend **downsampling input particles to a box size of 128 pixels**. ([Guide: How to downsample in CryoSPARC](readmes/downsample.md))
 
-[//]: # ()
-[//]: # (- numpy==1.24.4)
-
-
-
-## ⚙️ Configuration & Parameters ##
-### 1. Required Parameters
-These paths must be defined by the user. 
-*   **Model Weights:** The pre-trained Cryo-IEF model weights are available via [Huggingface](https://huggingface.co/westlake-repl/Cryo-IEF/tree/main/cryo_ief_checkpoint/cryo_ief_v1.5_vit_s).
-*   **Input Data:** CryoDECO accepts CryoSPARC job outputs (`Downsample`, `Extracted Particles`, `Restack Particles`, and `Particle Sets`).
-*   **Recommendation:** For efficient training and inference, we strongly recommend **downsampling input particles to a box size of 128 pixels**. ([Guide: How to downsample in CryoSPARC](readmes/downsample.md))
-
-[//]: # (Alternatively, they can be downloaded from the [Cryo-IEF google drive]&#40;https://drive.google.com/drive/folders/1C9jIdC5B58ohAwrfRalTngRtLtgIWfM8?usp=sharing&#41.)
-[//]: # (This model is intended for **academic research only**. Commercial use is prohibited without explicit permission.)
 ```yaml
 particles='/path/to/cryosparc_job/'           # Path to input particle job directory
 outdir='/path/to/save/your/results/'          # Directory for output results
 pretrained_model_path='/path/to/checkpoint/'  # Path to Cryo-IEF weights
 ```
 
-### 2. Hyperparameters (Optional)
-The following parameters control the latent space topology and clustering behavior. Default values are provided but should be adjusted based on the biological heterogeneity type.
+---
 
-**Latent Dimension:**
+### Optional Hyperparameters
 
-[//]: # (*   **Compositional Heterogeneity:** Set `feature_dim=128`. High dimensionality is required to ensure orthogonality between discrete structural states &#40;e.g., different complexes in a mixture&#41;.)
-[//]: # (*   **Conformational Heterogeneity:** Set `feature_dim=4`. A tight information bottleneck forces the model to map continuous dynamics onto a low-dimensional manifold.)
-Latent dimension (z) is a variable that can be changed to achieve best classification performance. 
-Generally, it is recommended that discrete compositional heterogeneity demands a large dimension size (e.g., z=128) to ensure orthogonality between disjoint structures. Conversely, simple conformational dynamics require a small dimension size (e.g., z=4) to enforce smoothness, while complex conformational heterogeneity necessitates an intermediate dimension (e.g., z=64).
+#### Latent Dimension (`feature_dim`)
 
+The latent dimension `z` is a hyperparameter that can be changed to achieve best classification performance:
 
+| Heterogeneity Type | Recommended `feature_dim` | Rationale |
+|---|---|---|
+| Compositional (discrete states) | `128` | High dimensionality ensures orthogonality between disjoint structures |
+| Conformational — simple motion | `4` | Low dimensionality enforces smoothness on a simple manifold |
+| Conformational — complex motion | `64` | Intermediate dimension balances expressiveness and regularity |
 
 ```yaml
-feature_dim=128   # Default: 128 (Compositional). Use 4 (Simple Motion) or 64 (Complex Motion) for Conformational.
+feature_dim=128   # Default: 128
 ```
 
-**Clustering:**
+#### Clustering
 
-The pipeline performs clustering on the learned latent features to generate initial volumes.
-*   **Compositional:** Set `k_num` based on the expected number of distinct species (if known).
-*   **Conformational:** `k_num` determines the number of maps sampled by clustering in the latent space. 
+The pipeline clusters learned latent features to generate initial volumes.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `k_num` | `8` | Number of clusters. For compositional heterogeneity, set to the expected number of distinct species. For conformational, controls the number of maps sampled from latent space. |
+| `clustering_type` | `'gmm'` | Clustering algorithm. `'gmm'` (Gaussian Mixture Model) is more accurate; `'k-means++'` is much faster. |
 
 ```yaml
 k_num=8               # Default: 8
-clustering_type='gmm' # Default: 'gmm' (Gaussian Mixture Model). Option: 'k-means++' (much faster)
+clustering_type='gmm' # Default: 'gmm'. Option: 'k-means++'
 ```
 
-**Using the Known Poses (CryoDECO-pose):**
+#### Using Known Poses (CryoDECO-pose)
 
-By default, CryoDECO estimates particle poses during training. 
-However, if high-quality pose estimates are available (e.g., from a prior CryoSPARC refinement or ab initio job), they can be utilized to enhance reconstruction quality and accelerate convergence.
-*   Requirement: The input `particles` job must contain pose information. You can generate this by running a `Restack Particles` or `Downsample Particles` job in CryoSPARC connected to your prior refinement or ab-initio job.
-   
+By default, CryoDECO estimates particle poses during training. If high-quality poses are available from a prior CryoSPARC refinement or *ab initio* job, they can be used to improve reconstruction quality and accelerate convergence.
+
+**Requirement:** The input `particles` job must contain pose information. Generate this by running a `Restack Particles` or `Downsample Particles` job in CryoSPARC connected to your prior refinement result.
+
 ```yaml
 use_gt_poses=True  # Default: False. Set to True to use CryoSPARC poses.
 use_gt_trans=True  # Default: False. Set to True to use CryoSPARC translations.
 ```
 
-**Optimization:**
+#### Optimization
 
-Adjust batch sizes based on available GPU memory (Defaults tuned for NVIDIA A40 40GB).
+Batch sizes are tuned for an **NVIDIA A40 (40 GB)**. Adjust based on your available GPU memory.
+
 ```yaml
 epochs_sgd=100        # Default: 100. Decrease for very large datasets (>1M particles).
 batch_size_hps=22     # Batch size for Hierarchical Pose Search (per GPU)
 batch_size_sgd=192    # Batch size for SGD Refinement (per GPU)
 ```
 
-## 🚀 Usage
+---
 
-Execute the following command to launch CryoDECO. Arguments with default values can be omitted.
+## Usage
 
 ```bash
 accelerate launch --mixed_precision=bf16 CryoDECO_run.py \
@@ -118,54 +127,39 @@ accelerate launch --mixed_precision=bf16 CryoDECO_run.py \
     --epochs_sgd 100
 ```
 
-*Note: By default, `accelerate` utilizes all available GPUs. To specify GPUs, use `--gpu_ids` (e.g., `--gpu_ids 0,1`) or `--num_processes`.*
+> By default, `accelerate` uses all available GPUs. To restrict to specific GPUs, use `--gpu_ids` (e.g., `--gpu_ids 0,1`) or `--num_processes`.
 
+---
 
-[//]: # (## 📈 Monitoring & Analysis)
+## Analysis & Output
 
-[//]: # (### Training Monitoring)
+Results are saved to `outdir/out/analysis_(epoch_number)/`.
 
-[//]: # (Real-time training metrics &#40;loss curves, pose error, etc.&#41; are logged to TensorBoard.)
+### A. Compositional Heterogeneity (Discrete States)
 
-[//]: # ()
-[//]: # (```bash)
+Focus on the **Clustering** results:
 
-[//]: # (conda activate CryoDECO)
+| Output | Description |
+|---|---|
+| `clustering(knum)/*.mrc` | Reconstructed density maps for each cluster center |
+| `clustering(knum)/umap_clusters.png` | UMAP visualization of latent features, colored by cluster |
+| `clustering(knum)/clustering_cs_star/` | `.star` files for each cluster, importable into CryoSPARC |
 
-[//]: # (tensorboard --logdir output/summaries)
+**Workflow:** Import `.star` files into CryoSPARC to create particle subsets for high-resolution refinement. If you used downsampled particles, map subsets back to the original full-resolution particles first. ([Guide: How to map back particles](readmes/mapback.md))
 
-[//]: # (```)
+### B. Conformational Heterogeneity (Continuous Motion)
 
-[//]: # (<p align="center">)
+Focus on the **PCA Traversal** results:
 
-[//]: # (  <img src="tensorboard_detail.png" width="90%" alt="Tensorboard Example">)
+| Output | Description |
+|---|---|
+| `pc1_10/` & `pc2_10/` | Maps reconstructed by traversing the latent space along PC1 and PC2 |
+| `pca_traversal.png` | Visualization of the latent manifold with sampled reconstruction locations |
 
-[//]: # (</p>)
+### Re-analyzing Without Retraining
 
-## 📈 Analysis
+If training is complete and you want to test different clustering parameters (e.g., a new `k_num`), use `--skip_train True`. Keep all other parameters consistent with the original run.
 
-### Output Interpretation
-Results are saved in `outdir/out/analysis_(epoch_number)/`.
-
-
-
-#### A. Compositional Heterogeneity (Discrete States)
-Focus on the **Clustering** results.
-*   **`clustering(knum)/`**: Contains reconstructed density maps (`.mrc`) for each cluster center.
-*   **`clustering(knum)/umap_clusters.png`**: UMAP visualization of latent features, colored by cluster assignment.
-*   **`clustering(knum)/clustering_cs_star/`**: Contains `.star` files for each cluster.
-    *   **Workflow:** Import these `.star` files into CryoSPARC to create particle subsets.
-    *   **High-Res Refinement:** If you used downsampled particles, map these subsets back to the original full-resolution particles before final refinement. ([Guide: How to map back particles](readmes/mapback.md)).
-
-#### B. Conformational Heterogeneity (Continuous Motion)
-Focus on the **PCA Traversal** results.
-*   **`pc1_10/` & `pc2_10/`**: Contains maps reconstructed by traversing the latent space along the 1st and 2nd Principal Components (PCs).
-*   **`pca_traversal.png`**: Visualization of the latent manifold with markers indicating the sampled locations for reconstruction.
-
-#### Re-analyzing (Skipping Training)
-
-[//]: # (Once the training is complete and you want to try different clustering parameters, you can skip the training phase and directly run the analysis by adding `--skip_train True` to the command you used for training:)
-If training is complete and you wish to test different clustering parameters (e.g., changing `k_num` ), use the `--skip_train True` flag. Ensure other parameters match the original run.
 ```bash
 accelerate launch --mixed_precision=bf16 CryoDECO_run.py \
     --particles $particles \
@@ -174,30 +168,30 @@ accelerate launch --mixed_precision=bf16 CryoDECO_run.py \
     --feature_dim 128 \
     --k_num 8 \
     --clustering_type 'gmm' \
-    --skip_train True 
+    --skip_train True
 ```
 
-[//]: # (Make sure to keep the other parameters consistent with your previous training run.)
+---
 
-##  Acknowledgments
+## Acknowledgments
 
-CryoDECO adapts code from [DrgnAI](https://github.com/ml-struct-bio/drgnai). We acknowledge the authors for their contributions to the open-source community.
+CryoDECO adapts code from [DrgnAI](https://github.com/ml-struct-bio/drgnai). We thank the authors for their contributions to the open-source community.
 
-[//]: # (## 📖 Reference ##)
+---
+
+## Citation
+
 If you use CryoDECO in your research, please cite:
+
 ```bibtex
 @article{yan_cryodeco_2026,
-	chapter = {Preprints},
-	title = {{CryoDECO}: {Deconstructing} {Extreme} {Compositional} and {Conformational} {Heterogeneity} in {Cryo}-{EM} via {Foundation} {Model} {Priors}},
-	url = {https://doi.org/10.65215/LTSpreprints.2025.12.30.000075},
-	doi = {10.65215/LTSpreprints.2025.12.30.000075},
-	abstract = {Resolving compositional and conformational heterogeneity remains the fundamental bottleneck in cryo-electron microscopy (cryo-EM). This challenge involves a circular dependency: accurate particle classification requires reliable 3D structural templates, yet template reconstruction demands high-fidelity classification. Current ab initio methods typically approach this as a joint optimization problem from a tabula rasa initialization, which frequently leads to optimization collapse when samples exhibit extreme complexity. Here, we present CryoDECO, an autoencoder framework that breaks this deadlock by integrating representation priors from pretrained cryo-EM foundation models. By projecting particle images onto a semantically structured manifold, CryoDECO effectively disentangles particle classification from structural reconstruction. We demonstrate that this prior-informed strategy robustly resolves extreme compositional heterogeneity, successfully classifying 100 distinct structures from a simulated mixture, and maps complex, continuous conformational landscapes. Applied to real-world datasets and unpurified native cell extracts, CryoDECO enables "Panoramic Structural Biology"—a high-throughput paradigm where in silico purification replaces laborious biochemical stabilization, allowing the simultaneous determination of diverse molecular machineries and their dynamic states.},
-	language = {en},
-	urldate = {2026-01-03},
-	journal = {LangTaoSha Preprint Server},
-	author = {Yan, Yang and Xi, Yanwanyu and Fan, Shiqi and Wang, Yifei and Tang, Ziyun and Yuan, Fajie and Shen, Huaizong},
-	year = {2026},
-	keywords = {Compositional Heterogeneity, Conformational Heterogeneity, Cryo-EM, CryoDECO, Systems Structural Biology},
+    title   = {{CryoDECO}: {Deconstructing} {Extreme} {Compositional} and {Conformational}
+               {Heterogeneity} in {Cryo}-{EM} via {Foundation} {Model} {Priors}},
+    author  = {Yan, Yang and Xi, Yanwanyu and Fan, Shiqi and Wang, Yifei and
+               Tang, Ziyun and Yuan, Fajie and Shen, Huaizong},
+    journal = {LangTaoSha Preprint Server},
+    year    = {2026},
+    doi     = {10.65215/LTSpreprints.2025.12.30.000075},
+    url     = {https://doi.org/10.65215/LTSpreprints.2025.12.30.000075},
 }
 ```
-
