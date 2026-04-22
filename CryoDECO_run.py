@@ -72,7 +72,7 @@ def settings():
 
             # 'lr_conf_encoder': 1.0e-6,
             'lr_conf_encoder': 1.0e-5,
-            'min_lr_encoder': 1.0e-5,
+            'min_lr_encoder': 0.0,
             'warm_up_epochs_encoder': 1,
 
             'lr': 1.0e-4,
