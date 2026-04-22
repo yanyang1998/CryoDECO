@@ -71,7 +71,7 @@ def settings():
             'hypervolume_optimizer_type': 'adamw',
 
             # 'lr_conf_encoder': 1.0e-6,
-            'lr_conf_encoder': 6.0e-5,
+            'lr_conf_encoder': 1.0e-5,
             'min_lr_encoder': 1.0e-5,
             'warm_up_epochs_encoder': 1,
 
