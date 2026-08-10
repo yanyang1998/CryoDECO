@@ -103,6 +103,17 @@ def kl_divergence_conf(latent_variables_dict):
     return kld
 
 
+def structural_z_gate_budget_loss(gate, target_mean):
+    """Penalize a structural-z gate only while its mean exceeds the budget."""
+    target = torch.as_tensor(float(target_mean), device=gate.device, dtype=gate.dtype)
+    return torch.relu(gate.mean() - target)
+
+
+def structural_z_gate_polar_loss(gate):
+    """Encourage structural-z gates to approach either zero or one."""
+    return (gate * (1.0 - gate)).mean()
+
+
 def l1_regularizer(x):
     """
     x: [batch_size, dim]

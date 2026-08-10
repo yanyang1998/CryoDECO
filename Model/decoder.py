@@ -10,6 +10,92 @@ import numpy as np
 from Model.encoder import GatingMechanism
 
 
+class StructuralZGate(nn.Module):
+    """Dataset-level, per-dimension gate for decoder-visible structural latents."""
+
+    def __init__(self, z_dim, init=0.95, init_noise=0.02):
+        super().__init__()
+        init = float(np.clip(init, 1.0e-4, 1.0 - 1.0e-4))
+        values = torch.full((int(z_dim),), init, dtype=torch.float32)
+        if init_noise > 0:
+            values.add_(torch.empty_like(values).uniform_(-init_noise, init_noise))
+        values.clamp_(1.0e-4, 1.0 - 1.0e-4)
+        self.raw_gate = nn.Parameter(torch.logit(values))
+        self.register_buffer("initial_gate", values.clone())
+        self.register_buffer("locked_mask", torch.ones_like(values))
+        self.register_buffer("mask_locked", torch.tensor(False))
+        self.register_buffer("anneal_alpha", torch.tensor(0.0))
+        self.register_buffer("gate_active", torch.tensor(True))
+
+    def gate(self, z=None):
+        gate = torch.sigmoid(self.raw_gate)
+        return gate if z is None else gate.to(dtype=z.dtype, device=z.device)
+
+    @torch.no_grad()
+    def lock_mask(self, threshold=0.5, min_active_dim=4):
+        gate = self.gate()
+        mask = gate >= float(threshold)
+        keep = min(max(int(min_active_dim), 0), gate.numel())
+        if int(mask.sum()) < keep:
+            mask[torch.topk(gate, keep).indices] = True
+        self.locked_mask.copy_(mask.to(self.locked_mask.dtype))
+        self.mask_locked.fill_(True)
+
+    def effective_gate(self, z=None):
+        gate = self.gate(z)
+        if not bool(self.gate_active.item()):
+            return torch.ones_like(gate)
+        if not bool(self.mask_locked.item()):
+            return gate
+        mask = self.locked_mask.to(dtype=gate.dtype, device=gate.device)
+        alpha = self.anneal_alpha.to(dtype=gate.dtype, device=gate.device)
+        return gate * (mask + (1.0 - alpha) * (1.0 - mask))
+
+    def forward(self, z):
+        return z * self.effective_gate(z)
+
+    @property
+    def active_dim(self):
+        if bool(self.mask_locked.item()):
+            return int(self.locked_mask.sum().item())
+        return int((self.gate() >= 0.5).sum().item())
+
+
+class AdaptiveLayerNorm(nn.Module):
+    """LayerNorm with zero-initialized structural-z scale and shift modulation."""
+
+    def __init__(self, normalized_shape, cond_dim, eps=1.0e-5):
+        super().__init__()
+        self.normalized_shape = (int(normalized_shape),)
+        self.cond_dim = int(cond_dim)
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(self.normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(self.normalized_shape))
+        self.modulator = nn.Linear(self.cond_dim, 2 * self.normalized_shape[0], bias=False)
+        nn.init.zeros_(self.modulator.weight)
+        self.register_buffer("runtime_scale", torch.tensor(1.0))
+
+    def set_runtime_scale(self, scale):
+        self.runtime_scale.fill_(float(scale))
+
+    def forward(self, x, condition=None):
+        y = F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+        if condition is None:
+            return y
+        if condition.ndim != 2 or condition.shape[-1] != self.cond_dim:
+            raise ValueError(f"AdaLN condition must have shape [batch, {self.cond_dim}]")
+        if y.shape[0] % condition.shape[0] != 0:
+            raise ValueError("AdaLN condition batch cannot be broadcast over decoder queries")
+        gamma, beta = self.modulator(condition).chunk(2, dim=-1)
+        repeat = y.shape[0] // condition.shape[0]
+        y_shape = y.shape
+        y = y.reshape(condition.shape[0], repeat, *y_shape[1:])
+        gamma = gamma[:, None]
+        beta = beta[:, None]
+        scale = self.runtime_scale.to(dtype=y.dtype, device=y.device)
+        return (y * (1.0 + scale * gamma) + scale * beta).reshape(y_shape)
+
+
 class VitDecoder(nn.Module):
     def __init__(self, in_features, hidden_dim, resolution, dim_attn=256, vit_layers=1, out_dim=1,
                  decoder_num_heads=8,
@@ -320,10 +406,15 @@ class MoEDecoder(nn.Module):
 class ResidualLinearMLPDecoder(nn.Module):
     def __init__(self, in_dim, n_layers, hidden_dim, out_dim, add_attn_layer=False,
                  use_attn_layer=False, nl=nn.ReLU, num_experts=0, top_k=1, num_shared_experts=1,
-                 feature_fuse_indices=None, feature_fuse_dim=384,layers_num_block=1,MLP_ln=True,):
+                 feature_fuse_indices=None, feature_fuse_dim=384, layers_num_block=1, MLP_ln=True,
+                 use_adaln=False, adaln_cond_dim=None, adaln_condition_norm=True):
         super(ResidualLinearMLPDecoder, self).__init__()
         self.num_shared_experts = num_shared_experts
         self.feature_fuse_indices = feature_fuse_indices
+        self.use_adaln = bool(use_adaln)
+        self.adaln_cond_dim = adaln_cond_dim
+        self.adaln_condition_norm = (nn.LayerNorm(adaln_cond_dim, elementwise_affine=False)
+                                     if self.use_adaln and adaln_condition_norm else nn.Identity())
         if use_attn_layer:
             if in_dim != hidden_dim and not add_attn_layer:
                 layers = [nn.Linear(in_dim, hidden_dim), nl()]
@@ -332,7 +423,7 @@ class ResidualLinearMLPDecoder(nn.Module):
         else:
             layers = [
                 ResidualLinear(in_dim, hidden_dim) if in_dim == hidden_dim else nn.Linear(in_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim) if MLP_ln else nn.Identity(),
+                self._make_norm(hidden_dim) if MLP_ln else nn.Identity(),
                 nl()
             ]
         # gate_layers=[]
@@ -350,7 +441,9 @@ class ResidualLinearMLPDecoder(nn.Module):
             else:
                 layers.append(ResidualLinear(hidden_dim, hidden_dim, fuse_intermediate_features=(
                             feature_fuse_indices is not None and i in feature_fuse_indices),
-                                             intermediate_features_dim=feature_fuse_dim, layer_norm_before=True,MLP_ln=MLP_ln,layer_num=layers_num_block,hidden_dim=hidden_dim//2))
+                                             intermediate_features_dim=feature_fuse_dim, layer_norm_before=True,
+                                             MLP_ln=MLP_ln, layer_num=layers_num_block, hidden_dim=hidden_dim//2,
+                                             use_adaln=self.use_adaln, adaln_cond_dim=self.adaln_cond_dim))
 
             # layers.append(nn.LayerNorm(hidden_dim) if MLP_ln else nn.Identity())
             layers.append(nl())
@@ -366,22 +459,41 @@ class ResidualLinearMLPDecoder(nn.Module):
         self.main_layers = nn.Sequential(*layers)
         # self.gate_layers = nn.ModuleList(gate_layers) if len(gate_layers) > 0 else None
 
-    def forward(self, x, intermediate_features=None, **args):
+    def _make_norm(self, dim):
+        return AdaptiveLayerNorm(dim, self.adaln_cond_dim) if self.use_adaln else nn.LayerNorm(dim)
+
+    def set_adaln_scale(self, scale):
+        for module in self.modules():
+            if isinstance(module, AdaptiveLayerNorm):
+                module.set_runtime_scale(scale)
+
+    @staticmethod
+    def _apply_layer(layer, x, condition=None, intermediate_features=None):
+        if isinstance(layer, AdaptiveLayerNorm):
+            return layer(x, condition)
+        if isinstance(layer, ResidualLinear):
+            return layer(x, intermediate_features=intermediate_features, adaln_condition=condition)
+        return layer(x)
+
+    def forward(self, x, intermediate_features=None, adaln_condition=None, **args):
         flat = x.view(-1, x.shape[-1])
         ii = -1
+        condition = self.adaln_condition_norm(adaln_condition) if adaln_condition is not None else None
         if self.feature_fuse_indices is not None and intermediate_features is not None:
             for i in range(len(self.main_layers)):
                 # if i / 2 - 1 in self.feature_fuse_indices:
                 if i / 3 - 1 in self.feature_fuse_indices:
                     intermediate_features_flat = intermediate_features[ii].contiguous().view(-1, intermediate_features[
                         ii].shape[-1])
-                    flat = self.main_layers[i](flat, intermediate_features_flat)
+                    flat = self._apply_layer(self.main_layers[i], flat, condition, intermediate_features_flat)
                     ii -= 1
                 else:
-                    flat = self.main_layers[i](flat)
+                    flat = self._apply_layer(self.main_layers[i], flat, condition)
             ret_flat = flat
         else:
-            ret_flat = self.main_layers(flat)
+            for layer in self.main_layers:
+                flat = self._apply_layer(layer, flat, condition)
+            ret_flat = flat
         ret = ret_flat.view(*x.shape[:-1], ret_flat.shape[-1])
         return ret
 
@@ -531,7 +643,8 @@ class MoELayer(nn.Module):
 
 class ResidualLinear(nn.Module):
     def __init__(self, n_in, n_out, fuse_intermediate_features=False, intermediate_features_dim=None,
-                 layer_norm_before=False,MLP_ln=True,layer_num=2,hidden_dim=128):
+                 layer_norm_before=False, MLP_ln=True, layer_num=2, hidden_dim=128,
+                 use_adaln=False, adaln_cond_dim=None):
         super(ResidualLinear, self).__init__()
         if layer_num == 1:
             hidden_dim= n_out
@@ -539,20 +652,23 @@ class ResidualLinear(nn.Module):
         for i in range(layer_num):
             if i == layer_num - 1:
                 if MLP_ln:
-                    layers += [nn.Linear(hidden_dim, n_out), nn.LayerNorm(n_out)]
+                    layers += [nn.Linear(hidden_dim, n_out), AdaptiveLayerNorm(n_out, adaln_cond_dim)
+                               if use_adaln else nn.LayerNorm(n_out)]
                 else:
                     layers += [nn.Linear(hidden_dim, n_out)]
 
 
             elif i == 0:
                 if MLP_ln:
-                    layers += [nn.Linear(n_in, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU()]
+                    layers += [nn.Linear(n_in, hidden_dim), AdaptiveLayerNorm(hidden_dim, adaln_cond_dim)
+                               if use_adaln else nn.LayerNorm(hidden_dim), nn.ReLU()]
                 else:
                     layers += [nn.Linear(n_in, hidden_dim), nn.ReLU()]
 
             else:
                 if MLP_ln:
-                    layers += [nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU()]
+                    layers += [nn.Linear(hidden_dim, hidden_dim), AdaptiveLayerNorm(hidden_dim, adaln_cond_dim)
+                               if use_adaln else nn.LayerNorm(hidden_dim), nn.ReLU()]
                 else:
                     layers += [nn.Linear(hidden_dim, hidden_dim), nn.ReLU()]
         self.layers = nn.Sequential(*layers)
@@ -565,9 +681,10 @@ class ResidualLinear(nn.Module):
             else:
                 self.norm_layer = nn.Identity()
 
-    def forward(self, x, intermediate_features=None):
-        # feature = self.linear(x)
-        feature = self.layers(x)
+    def forward(self, x, intermediate_features=None, adaln_condition=None):
+        feature = x
+        for layer in self.layers:
+            feature = layer(feature, adaln_condition) if isinstance(layer, AdaptiveLayerNorm) else layer(feature)
         if self.fuse_intermediate_features and intermediate_features is not None:
             feature = self.gate_layer(feature, self.norm_layer(intermediate_features))
         return feature + x
@@ -702,7 +819,10 @@ class SharedLinear(nn.Module):
 class HyperVolume(nn.Module):
     def __init__(self, resolution, z_dim, n_layers, hidden_dim, pe_type, pe_dim, feat_sigma, domain, pe_type_conf=None,
                  decoder_type='mlp', moe_num=6, num_shared_experts=1, use_clustering_route=True,
-                 feature_fuse_indices=None,decoder_ln=True):
+                 feature_fuse_indices=None, decoder_ln=True,
+                 structural_z_gate_enabled=True, structural_z_gate_init=0.95,
+                 structural_z_gate_init_noise=0.02, decoder_adaln_enabled=True,
+                 decoder_adaln_condition_norm=True, decoder_adaln_scale=0.5):
         """
         resolution: int
         z_dim: int
@@ -717,6 +837,12 @@ class HyperVolume(nn.Module):
         self.pe_type = pe_type
         self.pe_dim = pe_dim
         self.decoder_ln = decoder_ln
+        self.structural_z_gate_enabled = bool(structural_z_gate_enabled and z_dim > 0)
+        self.structural_z_gate = (StructuralZGate(z_dim, structural_z_gate_init, structural_z_gate_init_noise)
+                                  if self.structural_z_gate_enabled else None)
+        self.decoder_adaln_enabled = bool(decoder_adaln_enabled and z_dim > 0)
+        self.decoder_adaln_condition_norm = bool(decoder_adaln_condition_norm)
+        self.decoder_adaln_scale = float(decoder_adaln_scale)
         if pe_type == 'gaussian':
             rand_freqs = torch.randn((3 * pe_dim, 3), dtype=torch.float) * feat_sigma
             self.rand_freqs = nn.Parameter(rand_freqs, requires_grad=False)
@@ -755,7 +881,11 @@ class HyperVolume(nn.Module):
             else:
                 self.decoder = ResidualLinearMLPDecoder(in_features, n_layers, hidden_dim, 1,
                                                         feature_fuse_indices=feature_fuse_indices,
-                                                        feature_fuse_dim=x_pe_dim,MLP_ln=self.decoder_ln)
+                                                        feature_fuse_dim=x_pe_dim, MLP_ln=self.decoder_ln,
+                                                        use_adaln=self.decoder_adaln_enabled,
+                                                        adaln_cond_dim=z_dim,
+                                                        adaln_condition_norm=self.decoder_adaln_condition_norm)
+                self.decoder.set_adaln_scale(self.decoder_adaln_scale)
         else:
             raise NotImplementedError
 
@@ -771,14 +901,16 @@ class HyperVolume(nn.Module):
         subtomogram_averaging = x.dim() == 4
         if self.pe_type == 'gaussian':
             x = self.random_fourier_encoding(x)
-        if z is not None:
+        decoder_z = self.apply_structural_z(z)
+        adaln_condition = decoder_z
+        if decoder_z is not None:
             if self.pe_type_conf == 'geom':
-                z = self.geom_fourier_encoding_conf(z)
+                decoder_z = self.geom_fourier_encoding_conf(decoder_z)
             if subtomogram_averaging:
                 n_tilts = x.shape[1]
-                z_expand = z[:, None, None].expand(-1, n_tilts, n_pts, -1)
+                z_expand = decoder_z[:, None, None].expand(-1, n_tilts, n_pts, -1)
             else:
-                z_expand = z[:, None].expand(-1, n_pts, -1)
+                z_expand = decoder_z[:, None].expand(-1, n_pts, -1)
             x = torch.cat([x, z_expand], -1)
         if intermediate_features is not None:
             if self.pe_type_conf == 'geom':
@@ -795,8 +927,35 @@ class HyperVolume(nn.Module):
         else:
             out_shape = (batch_size_in, n_pts)
 
-        y_pred = self.decoder(x, route_id=route_labels, intermediate_features=intermediate_features)
+        if self.decoder_type == 'moe':
+            y_pred = self.decoder(x, route_id=route_labels)
+        else:
+            y_pred = self.decoder(x, route_id=route_labels, intermediate_features=intermediate_features,
+                                  adaln_condition=adaln_condition)
         return y_pred.reshape(*out_shape)
+
+    def apply_structural_z(self, z):
+        if z is None or self.structural_z_gate is None:
+            return z
+        return self.structural_z_gate(z)
+
+    def get_structural_z_gate(self):
+        return None if self.structural_z_gate is None else self.structural_z_gate.gate()
+
+    def configure_structural_z(self, epoch, warmup_epochs=5, hard_start_epoch=50,
+                               hard_anneal_epochs=5, threshold=0.5, min_active_dim=4):
+        if self.structural_z_gate is None:
+            return
+        gate = self.structural_z_gate
+        gate.gate_active.fill_(int(epoch) >= int(warmup_epochs))
+        if int(epoch) >= int(hard_start_epoch) and not bool(gate.mask_locked.item()):
+            gate.lock_mask(threshold, min_active_dim)
+        if bool(gate.mask_locked.item()):
+            alpha = 1.0 if hard_anneal_epochs <= 0 else min(
+                max((float(epoch) - hard_start_epoch) / hard_anneal_epochs, 0.0), 1.0)
+            gate.anneal_alpha.fill_(alpha)
+            if alpha >= 1.0:
+                gate.raw_gate.requires_grad_(False)
 
     def random_fourier_encoding(self, x):
         """
@@ -840,7 +999,11 @@ class HyperVolume(nn.Module):
             'num_shared_experts': self.num_shared_experts,
             'feature_fuse_indices': self.decoder.feature_fuse_indices if hasattr(self.decoder,
                                                                                  'feature_fuse_indices') else None,
-            'decoder_ln': self.decoder_ln
+            'decoder_ln': self.decoder_ln,
+            'structural_z_gate_enabled': self.structural_z_gate_enabled,
+            'decoder_adaln_enabled': self.decoder_adaln_enabled,
+            'decoder_adaln_condition_norm': self.decoder_adaln_condition_norm,
+            'decoder_adaln_scale': self.decoder_adaln_scale,
         }
         return building_params
 

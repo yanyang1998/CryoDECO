@@ -9,6 +9,7 @@ from datetime import datetime as dt
 import numpy as np
 import time
 import re
+import json
 from typing_extensions import Any
 
 import torch
@@ -28,7 +29,8 @@ from Analyse import summary, utils
 from Model.configuration import TrainingConfigurations
 from analyze import ModelAnalyzer, Clustering_tool
 from Pose.lattice import Lattice
-from Model.losses import kl_divergence_conf, l1_regularizer, l2_frequency_bias
+from Model.losses import (kl_divergence_conf, l1_regularizer, l2_frequency_bias,
+                          structural_z_gate_budget_loss, structural_z_gate_polar_loss)
 from Model.models import CryoDECO, PoseTable, adjust_learning_rate
 from Model.decoder import HyperVolume, VolumeExplicit
 from Data.mask import CircularMask, FrequencyMarchingMask
@@ -410,6 +412,12 @@ class ModelTrainer:
             'use_clustering_route': self.configs.use_clustering_route,
             'feature_fuse_indices': self.configs.feature_fuse_indices if checkpoint is None else checkpoint['hypervolume_params']['feature_fuse_indices'],
             'decoder_ln': self.configs.decoder_ln if checkpoint is None else checkpoint['hypervolume_params']['decoder_ln'],
+            'decoder_adaln_enabled': self.configs.decoder_adaln_enabled,
+            'decoder_adaln_condition_norm': self.configs.decoder_adaln_condition_norm,
+            'decoder_adaln_scale': self.configs.decoder_adaln_scale,
+            'structural_z_gate_enabled': self.configs.structural_z_gate_enabled,
+            'structural_z_gate_init': self.configs.structural_z_gate_init,
+            'structural_z_gate_init_noise': self.configs.structural_z_gate_init_noise,
         }
 
         self.will_use_point_estimates = self.configs.epochs_sgd >= 1
@@ -462,7 +470,13 @@ class ModelTrainer:
                                            num_shared_experts=hyper_volume_params['num_shared_experts'],
                                            use_clustering_route=hyper_volume_params['use_clustering_route'],
                                            feature_fuse_indices=hyper_volume_params['feature_fuse_indices'],
-                                           decoder_ln=hyper_volume_params['decoder_ln']
+                                           decoder_ln=hyper_volume_params['decoder_ln'],
+                                           decoder_adaln_enabled=hyper_volume_params['decoder_adaln_enabled'],
+                                           decoder_adaln_condition_norm=hyper_volume_params['decoder_adaln_condition_norm'],
+                                           decoder_adaln_scale=hyper_volume_params['decoder_adaln_scale'],
+                                           structural_z_gate_enabled=hyper_volume_params['structural_z_gate_enabled'],
+                                           structural_z_gate_init=hyper_volume_params['structural_z_gate_init'],
+                                           structural_z_gate_init_noise=hyper_volume_params['structural_z_gate_init_noise'],
                                            )
         else:
             self.hypervolume = VolumeExplicit(self.lattice.D, hyper_volume_params['domain'],
@@ -499,6 +513,16 @@ class ModelTrainer:
 
             filtered_state_dict_decoder = self.filter_state_dict(checkpoint['hypervolume_state_dict'],self.hypervolume.state_dict())
             self.accelerator.print(self.hypervolume.load_state_dict(filtered_state_dict_decoder, strict=False))
+            if ('structural_z_gate.raw_gate' not in checkpoint['hypervolume_state_dict']
+                    and getattr(self.hypervolume, 'structural_z_gate', None) is not None):
+                gate = self.hypervolume.structural_z_gate
+                with torch.no_grad():
+                    gate.raw_gate.fill_(torch.logit(torch.tensor(1.0 - 1.0e-4)))
+                    gate.locked_mask.fill_(1.0)
+                    gate.mask_locked.fill_(True)
+                    gate.anneal_alpha.fill_(1.0)
+                gate.raw_gate.requires_grad_(False)
+                self.accelerator.print("Legacy checkpoint detected: structural-z uses an all-open fixed mask.")
             self.start_epoch = checkpoint['epoch'] + 1 if not self.post_training else 0
 
             if 'output_mask_radius' in checkpoint:
@@ -528,13 +552,21 @@ class ModelTrainer:
         self.optimizer_types = dict()
 
         # hypervolume
-        hyper_volume_params = [{
-            'params': list(self.hypervolume.parameters())}]
+        gate_params = (list(self.hypervolume.structural_z_gate.parameters())
+                       if getattr(self.hypervolume, 'structural_z_gate', None) is not None else [])
+        gate_param_ids = {id(param) for param in gate_params}
+        hyper_volume_params = [{'params': [param for param in self.hypervolume.parameters()
+                                           if id(param) not in gate_param_ids]}]
         self.optimizers['hypervolume'] = self.optim_types[
             self.configs.hypervolume_optimizer_type](hyper_volume_params,
                                                      lr=self.configs.lr)
         self.optimizer_types[
             'hypervolume'] = self.configs.hypervolume_optimizer_type
+        if gate_params:
+            self.optimizers['structural_z_gate'] = torch.optim.Adam(
+                gate_params, lr=self.configs.structural_z_gate_lr,
+                weight_decay=self.configs.structural_z_gate_weight_decay)
+            self.optimizer_types['structural_z_gate'] = 'adam'
 
         # pose table
         if not self.configs.use_gt_poses:
@@ -599,8 +631,8 @@ class ModelTrainer:
                 for key in self.optimizers:
                     if self.post_training and key == 'pose_table':
                         continue
-                    self.optimizers[key].load_state_dict(
-                        checkpoint['optimizers_state_dict'][key])
+                    if key in checkpoint.get('optimizers_state_dict', {}):
+                        self.optimizers[key].load_state_dict(checkpoint['optimizers_state_dict'][key])
 
         # dataloaders
         if self.configs.processed_data is not None:
@@ -768,8 +800,13 @@ class ModelTrainer:
                 self.data_generator,
                 self.data_generator_latent_optimization, self.data_generator_pose_search)
 
-        self.hypervolume, self.optimizers['hypervolume'] = self.accelerator.prepare(self.hypervolume,
-                                                                                    self.optimizers['hypervolume'])
+        if 'structural_z_gate' in self.optimizers:
+            self.hypervolume, self.optimizers['hypervolume'], self.optimizers['structural_z_gate'] = \
+                self.accelerator.prepare(self.hypervolume, self.optimizers['hypervolume'],
+                                         self.optimizers['structural_z_gate'])
+        else:
+            self.hypervolume, self.optimizers['hypervolume'] = self.accelerator.prepare(
+                self.hypervolume, self.optimizers['hypervolume'])
         if not self.configs.use_gt_poses and self.will_use_point_estimates:
             self.pose_table, self.optimizers['pose_table'] = self.accelerator.prepare(self.pose_table,
                                                                                       self.optimizers['pose_table'])
@@ -814,6 +851,19 @@ class ModelTrainer:
             self.epoch += 1
             self.current_epoch_particles_count = 0
             self.optimized_modules = ['hypervolume']
+            hypervolume = self.hypervolume.module if hasattr(self.hypervolume, 'module') else self.hypervolume
+            if hasattr(hypervolume, 'configure_structural_z'):
+                hypervolume.configure_structural_z(
+                    self.epoch, self.configs.structural_z_warmup_epochs,
+                    self.configs.structural_z_hard_gate_start_epoch,
+                    self.configs.structural_z_hard_gate_anneal_epochs,
+                    self.configs.structural_z_hard_gate_threshold,
+                    self.configs.structural_z_hard_gate_min_active_dim)
+            gate_module = getattr(hypervolume, 'structural_z_gate', None)
+            if (gate_module is not None and bool(gate_module.gate_active.item())
+                    and not bool(gate_module.mask_locked.item())
+                    and gate_module.raw_gate.requires_grad):
+                self.optimized_modules.append('structural_z_gate')
 
             self.pose_only = (self.total_particles_count
                               < self.configs.pose_only_phase
@@ -1409,6 +1459,22 @@ class ModelTrainer:
             total_loss += self.configs.l2_smoothness_regularizer * smoothness_loss
             all_losses['L2 Smoothness Loss'] = smoothness_loss.item()
 
+        hypervolume = self.hypervolume.module if hasattr(self.hypervolume, 'module') else self.hypervolume
+        gate_module = getattr(hypervolume, 'structural_z_gate', None)
+        if gate_module is not None:
+            gate = gate_module.gate()
+            all_losses['Structural-z Gate Mean'] = gate.detach().mean().item()
+            all_losses['Structural-z Active Dim'] = gate_module.active_dim
+            all_losses['Structural-z Mask Locked'] = float(gate_module.mask_locked.item())
+            if bool(gate_module.gate_active.item()) and not bool(gate_module.mask_locked.item()):
+                budget = structural_z_gate_budget_loss(
+                    gate, self.configs.structural_z_gate_budget_target_mean)
+                polar = structural_z_gate_polar_loss(gate)
+                gate_loss = (self.configs.structural_z_gate_budget_weight * budget
+                             + self.configs.structural_z_gate_polar_weight * polar)
+                total_loss = total_loss + gate_loss
+                all_losses['Structural-z Gate Loss'] = gate_loss.detach().item()
+
         return total_loss, all_losses
 
     def make_heavy_summary(self):
@@ -1604,12 +1670,33 @@ class ModelTrainer:
             'optimizers_state_dict': optimizers_state_dict,
             'current_centers': self.clustering_tool_moe.raw_centers_norm if self.clustering_tool_moe is not None else None,
         }
+        hypervolume = self.hypervolume.module if hasattr(self.hypervolume, 'module') else self.hypervolume
+        gate_module = getattr(hypervolume, 'structural_z_gate', None)
+        saved_objects['structural_z'] = ({
+            'd_cap': gate_module.raw_gate.numel(),
+            'd_act': gate_module.active_dim,
+            'mask_locked': bool(gate_module.mask_locked.item()),
+            'anneal_alpha': float(gate_module.anneal_alpha.item()),
+        } if gate_module is not None else None)
 
         if hasattr(self.output_mask, 'current_radius'):
             saved_objects[
                 'output_mask_radius'] = self.output_mask.current_radius
 
         torch.save(saved_objects, out_weights)
+        if gate_module is not None and self.accelerator.is_main_process:
+            gate = gate_module.gate().detach().cpu()
+            with open(os.path.join(self.outdir, 'structural_z.json'), 'w') as handle:
+                json.dump({
+                    'epoch': self.epoch,
+                    'd_cap': int(gate.numel()),
+                    'd_act': gate_module.active_dim,
+                    'gate_mean': float(gate.mean()),
+                    'mask_locked': bool(gate_module.mask_locked.item()),
+                    'anneal_alpha': float(gate_module.anneal_alpha.item()),
+                    'gate': gate.tolist(),
+                    'hard_mask': gate_module.locked_mask.detach().cpu().tolist(),
+                }, handle, indent=2)
 
     def filter_state_dict(self, state_dict,model_dict):
         filtered_state_dict = {

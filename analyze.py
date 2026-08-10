@@ -750,7 +750,16 @@ class ModelAnalyzer:
 
         hypervolume_params = checkpoint['hypervolume_params']
         hypervolume = decoder.HyperVolume(**hypervolume_params)
-        hypervolume.load_state_dict(checkpoint['hypervolume_state_dict'])
+        hypervolume_state = checkpoint['hypervolume_state_dict']
+        hypervolume.load_state_dict(hypervolume_state, strict=False)
+        if ('structural_z_gate.raw_gate' not in hypervolume_state
+                and hypervolume.structural_z_gate is not None):
+            gate = hypervolume.structural_z_gate
+            with torch.no_grad():
+                gate.raw_gate.fill_(torch.logit(torch.tensor(1.0 - 1.0e-4)))
+                gate.locked_mask.fill_(1.0)
+                gate.mask_locked.fill_(True)
+                gate.anneal_alpha.fill_(1.0)
         hypervolume.eval()
         hypervolume.to(self.device)
 
@@ -1689,4 +1698,3 @@ def remove_rows_by_sum(arr: np.ndarray, threshold: float) -> np.ndarray:
 
     # 3. 使用布尔掩码来索引原数组，即可筛选出所有符合条件的行
     return arr[keep_mask], keep_mask
-

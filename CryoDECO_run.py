@@ -53,39 +53,38 @@ def settings():
             'use_pfm_encoder': True,
             'use_fused_encoder': False,
             'fuse_type': 'gate',
-            'fuse_only_table': 0.35,
+            'fuse_only_table': 0.5,
             'min_fuse_only_table': 0.0,
             'feature_take_indices': None,
             'feature_fuse_indices': None,
 
             'encoder_type': 'vit_small',
             'finetune_strategy': 'all',
-            'finetune_layer_num': 6, # for vit_block finetune
+            'finetune_layer_num': 1, # only used by the vit_block strategy
             'pretrained_model_path': None,
             'resolution_encoder': None,
-            'feature_dim': 128,
+            'feature_dim': 64,
             'conf_table_dim': 4,
 
             'seed': 1701,
             'conf_encoder_optimizer_type': 'adamw',
-            'hypervolume_optimizer_type': 'adamw',
+            'hypervolume_optimizer_type': 'adam',
 
-            # 'lr_conf_encoder': 1.0e-6,
             'lr_conf_encoder': 1.0e-5,
             'min_lr_encoder': 0.0,
-            'warm_up_epochs_encoder': 1,
+            'warm_up_epochs_encoder': 0,
 
             'lr': 1.0e-4,
             'lr_pose_table': 1.0e-4,
-            'lr_conf_table': 1.0e-6,
-            'warm_up_epochs': 30,
-            'min_lr_conf_table': 0.0,
+            'lr_conf_table': 1.0e-2,
+            'warm_up_epochs': 5,
+            'min_lr_conf_table': 1.0e-2,
 
             'use_amp': True,
             'gradient_checkpointing': True,
             'batch_size_hps':22,
             'batch_size_known_poses': 64,
-            'batch_size_sgd': 192,
+            'batch_size_sgd': 64,
             'lazy': False,
 
             # hypervolume
@@ -93,13 +92,29 @@ def settings():
             'hypervolume_dim': 256,
             'decoder_type': 'mlp',
             'decoder_ln': True,
+            'decoder_adaln_enabled': True,
+            'decoder_adaln_condition_norm': True,
+            'decoder_adaln_scale': 0.5,
+            'structural_z_gate_enabled': True,
+            'structural_z_warmup_epochs': 5,
+            'structural_z_gate_init': 0.95,
+            'structural_z_gate_init_noise': 0.02,
+            'structural_z_gate_lr': 1.0e-3,
+            'structural_z_gate_weight_decay': 0.0,
+            'structural_z_gate_budget_target_mean': 0.05,
+            'structural_z_gate_budget_weight': 0.002,
+            'structural_z_gate_polar_weight': 0.002,
+            'structural_z_hard_gate_start_epoch': 50,
+            'structural_z_hard_gate_threshold': 0.5,
+            'structural_z_hard_gate_anneal_epochs': 5,
+            'structural_z_hard_gate_min_active_dim': 4,
             'moe_num': 4,
             'pe_dim': 64,
             'num_shared_experts': 1,
-            'k_init': 48,
+            'k_init': 4,
             'clustering_dim': 16,
             'cluster_num_evaluate': 0,
-            'clustering_type': 'k-means++',
+            'clustering_type': 'gmm',
             'use_clustering_route': False,
 
             # pretrain with processed data
@@ -118,8 +133,8 @@ def settings():
             'skip_train': False,
             'epoch': -1,
             'save_features': False,
-            'k_num': 8,
-            'k_init': 64,
+            'k_num': 4,
+            'k_init': 4,
             'umap_dim':16,
             'clustering_type': 'gmm',
             'cs_dir_path': None,
@@ -175,6 +190,24 @@ def main():
     parser.add_argument('--decoder_type', default=None, type=str)
     parser.add_argument('--use_clustering_route', type=lambda x: x.lower() == 'true', default=None)
     parser.add_argument('--decoder_ln', type=lambda x: x.lower() == 'true', default=None)
+    parser.add_argument('--decoder_adaln_enabled', type=lambda x: x.lower() == 'true', default=None,
+                        help='Enable structural-z-conditioned adaptive layer normalization.')
+    parser.add_argument('--decoder_adaln_condition_norm', type=lambda x: x.lower() == 'true', default=None)
+    parser.add_argument('--decoder_adaln_scale', type=float, default=None)
+    parser.add_argument('--structural_z_gate_enabled', type=lambda x: x.lower() == 'true', default=None,
+                        help='Learn the decoder-visible structural latent capacity.')
+    parser.add_argument('--structural_z_warmup_epochs', type=int, default=None)
+    parser.add_argument('--structural_z_gate_init', type=float, default=None)
+    parser.add_argument('--structural_z_gate_init_noise', type=float, default=None)
+    parser.add_argument('--structural_z_gate_lr', type=float, default=None)
+    parser.add_argument('--structural_z_gate_weight_decay', type=float, default=None)
+    parser.add_argument('--structural_z_gate_budget_target_mean', type=float, default=None)
+    parser.add_argument('--structural_z_gate_budget_weight', type=float, default=None)
+    parser.add_argument('--structural_z_gate_polar_weight', type=float, default=None)
+    parser.add_argument('--structural_z_hard_gate_start_epoch', type=int, default=None)
+    parser.add_argument('--structural_z_hard_gate_threshold', type=float, default=None)
+    parser.add_argument('--structural_z_hard_gate_anneal_epochs', type=int, default=None)
+    parser.add_argument('--structural_z_hard_gate_min_active_dim', type=int, default=None)
     # parser.add_argument('--attn_sample_num', default=None, type=int)
 
     parser.add_argument('--use_pfm_encoder', type=lambda x: x.lower() == 'true', default=None)
@@ -211,6 +244,18 @@ def main():
 
     args = parser.parse_args()
     configs = settings()
+    adaptive_args = (
+        'decoder_adaln_enabled', 'decoder_adaln_condition_norm', 'decoder_adaln_scale',
+        'structural_z_gate_enabled', 'structural_z_warmup_epochs', 'structural_z_gate_init',
+        'structural_z_gate_init_noise', 'structural_z_gate_lr', 'structural_z_gate_weight_decay',
+        'structural_z_gate_budget_target_mean', 'structural_z_gate_budget_weight',
+        'structural_z_gate_polar_weight', 'structural_z_hard_gate_start_epoch',
+        'structural_z_hard_gate_threshold', 'structural_z_hard_gate_anneal_epochs',
+        'structural_z_hard_gate_min_active_dim')
+    for name in adaptive_args:
+        value = getattr(args, name)
+        if value is not None:
+            configs['train_settings'][name] = value
     if args.outdir is not None:
         configs['outdir'] = args.outdir
     if args.particles is not None:
@@ -496,16 +541,20 @@ def main():
         pixel_size=1.0
 
 
-    configs['train_settings']['lr'] = configs['train_settings']['lr'] * accelerator.num_processes
-    configs['train_settings']['lr_pose_table'] = configs['train_settings'][
-                                                     'lr_pose_table'] * accelerator.num_processes
-    configs['train_settings']['lr_conf_table'] = configs['train_settings'][
-                                                     'lr_conf_table'] * accelerator.num_processes
-    configs['train_settings']['lr_conf_encoder'] = configs['train_settings'][
-                                                       'lr_conf_encoder'] * accelerator.num_processes
-    configs['train_settings']['min_lr_conf_table'] = configs['train_settings']['min_lr_conf_table'] * accelerator.num_processes
-    configs['train_settings']['min_lr_encoder'] = configs['train_settings'][
-                                                      'min_lr_encoder'] * accelerator.num_processes
+    reference_batch_size_sgd = 128
+    reference_num_processes = 2
+    lr_scale = accelerator.num_processes * configs['train_settings']['batch_size_sgd'] / reference_batch_size_sgd
+    gate_lr_scale = (accelerator.num_processes * configs['train_settings']['batch_size_sgd']
+                     / (reference_batch_size_sgd * reference_num_processes))
+    base_lrs = {}
+    for lr_key in ('lr', 'lr_pose_table', 'lr_conf_table', 'lr_conf_encoder',
+                   'min_lr_conf_table', 'min_lr_encoder'):
+        base_lrs[lr_key] = configs['train_settings'][lr_key]
+        configs['train_settings'][lr_key] *= lr_scale
+    base_lrs['structural_z_gate_lr'] = configs['train_settings']['structural_z_gate_lr']
+    configs['train_settings']['structural_z_gate_lr'] *= gate_lr_scale
+    accelerator.print(f"Learning-rate scaling: base={base_lrs}, effective_scale={lr_scale}, "
+                      f"gate_scale={gate_lr_scale}")
     accelerator.print(json.dumps(configs, indent=4,default=str))
     trainer = ModelTrainer(configs['outdir'], configs['train_settings'],
                            load=configs['load'] if not configs['analysis_settings']['skip_train'] else True,

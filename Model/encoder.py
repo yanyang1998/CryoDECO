@@ -92,8 +92,26 @@ class CryosolverEncoder(nn.Module):
                     if not name.startswith('head'):
                         param.requires_grad = False
 
-            pretrained_state_dict = load_file(os.path.join(pretrained_model_path, 'model.safetensors'),
-                                              device='cpu')
+            checkpoint_path = os.path.join(pretrained_model_path, 'model.safetensors')
+            if not os.path.isfile(checkpoint_path):
+                raise FileNotFoundError(
+                    f"DECO-IEF checkpoint not found: {checkpoint_path}. "
+                    "Pass the directory containing model.safetensors.")
+            if encoder_type == 'vit_small':
+                if len(self.vit_backbone.blocks) != 12 or in_channels != 384:
+                    raise RuntimeError("DECO-IEF ViT-Small requires 12 blocks and embedding dimension 384.")
+            print(f"Loading pretrained encoder from {checkpoint_path}")
+            pretrained_state_dict = load_file(checkpoint_path, device='cpu')
+            if encoder_type == 'vit_small':
+                cls_token = pretrained_state_dict.get('base_encoder.cls_token')
+                patch_weight = pretrained_state_dict.get('base_encoder.patch_embed.proj.weight')
+                projection_weight = pretrained_state_dict.get('base_encoder.head.0.weight')
+                if (cls_token is None or tuple(cls_token.shape) != (1, 1, 384)
+                        or patch_weight is None or tuple(patch_weight.shape) != (384, 1, 14, 14)
+                        or projection_weight is None or projection_weight.shape[-1] != 384
+                        or 'base_encoder.blocks.11.attn.qkv.weight' not in pretrained_state_dict):
+                    raise RuntimeError(
+                        "DECO-IEF checkpoint does not match the expected ViT-Small backbone/projection head.")
             my_state_dict = {}
             for k in list(pretrained_state_dict.keys()):
                 # retain only base_encoder up to before the embedding layer
@@ -105,8 +123,11 @@ class CryosolverEncoder(nn.Module):
                     my_state_dict['projector' + k[len('base_encoder.head'):]] = pretrained_state_dict[k]
                 # delete renamed or unused k
                 # del state_dict[k]
-            msg = self.vit_backbone.load_state_dict(my_state_dict, strict=False)
-            # print(msg)
+            try:
+                msg = self.vit_backbone.load_state_dict(my_state_dict, strict=False)
+            except RuntimeError as exc:
+                raise RuntimeError(f"DECO-IEF checkpoint is incompatible with {encoder_type}: {exc}") from exc
+            print(f"DECO-IEF load result: missing={msg.missing_keys}, unexpected={msg.unexpected_keys}")
 
     def forward(self, in_dict, pose_only=False, table_features=None):
 

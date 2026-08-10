@@ -251,7 +251,7 @@ class TrainingConfigurations(_BaseConfigurations):
     # conformations
     variational_het: bool = False
     z_dim: int = 4
-    feature_dim: int = 4
+    feature_dim: int = 64
     conf_table_dim: int = 4
     std_z_init: float = 0.1
 
@@ -286,6 +286,22 @@ class TrainingConfigurations(_BaseConfigurations):
     hypervolume_layers: int = 8
     hypervolume_dim: int = 512
     decoder_ln: bool = True
+    decoder_adaln_enabled: bool = True
+    decoder_adaln_condition_norm: bool = True
+    decoder_adaln_scale: float = 0.5
+    structural_z_gate_enabled: bool = True
+    structural_z_warmup_epochs: int = 5
+    structural_z_gate_init: float = 0.95
+    structural_z_gate_init_noise: float = 0.02
+    structural_z_gate_lr: float = 1.0e-3
+    structural_z_gate_weight_decay: float = 0.0
+    structural_z_gate_budget_target_mean: float = 0.05
+    structural_z_gate_budget_weight: float = 0.002
+    structural_z_gate_polar_weight: float = 0.002
+    structural_z_hard_gate_start_epoch: int = 50
+    structural_z_hard_gate_threshold: float = 0.5
+    structural_z_hard_gate_anneal_epochs: int = 5
+    structural_z_hard_gate_min_active_dim: int = 4
 
     pe_type: str = "gaussian"
     pe_dim: int = 32
@@ -374,6 +390,27 @@ class TrainingConfigurations(_BaseConfigurations):
 
     def __post_init__(self):
         super().__post_init__()
+
+        if not 0.0 < self.structural_z_gate_init < 1.0:
+            raise ValueError("structural_z_gate_init must be in (0, 1)")
+        if self.structural_z_gate_init_noise < 0.0:
+            raise ValueError("structural_z_gate_init_noise must be non-negative")
+        if self.structural_z_gate_lr <= 0.0 or self.structural_z_gate_weight_decay < 0.0:
+            raise ValueError("structural-z gate LR must be positive and weight decay non-negative")
+        if not 0.0 <= self.structural_z_gate_budget_target_mean <= 1.0:
+            raise ValueError("structural_z_gate_budget_target_mean must be in [0, 1]")
+        if self.structural_z_gate_budget_weight < 0.0 or self.structural_z_gate_polar_weight < 0.0:
+            raise ValueError("structural-z regularization weights must be non-negative")
+        if not 0.0 <= self.structural_z_hard_gate_threshold <= 1.0:
+            raise ValueError("structural_z_hard_gate_threshold must be in [0, 1]")
+        if min(self.structural_z_warmup_epochs, self.structural_z_hard_gate_start_epoch,
+               self.structural_z_hard_gate_anneal_epochs,
+               self.structural_z_hard_gate_min_active_dim) < 0:
+            raise ValueError("structural-z epoch and dimension settings must be non-negative")
+        if self.decoder_adaln_scale < 0.0:
+            raise ValueError("decoder_adaln_scale must be non-negative")
+        if self.decoder_adaln_enabled and self.decoder_type != 'mlp':
+            raise ValueError("decoder_adaln_enabled currently requires decoder_type='mlp'")
 
         if self.explicit_volume and self.z_dim >= 1:
             raise ValueError("Explicit volumes do not support "

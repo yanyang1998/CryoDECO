@@ -49,7 +49,7 @@ pip install -r requirements.txt
 |---|---|
 | `particles` | Path to the CryoSPARC job directory (supports `Downsample`, `Extracted Particles`, `Restack Particles`, and `Particle Sets` jobs) |
 | `outdir` | Directory where all output results will be saved |
-| `pretrained_model_path` | Path to Cryo-IEF model weights ([download from HuggingFace](https://huggingface.co/westlake-repl/Cryo-IEF/tree/main/cryo_ief_checkpoint/cryo_ief_v1.5_vit_s)) |
+| `pretrained_model_path` | Path to DECO-IEF ViT-Small weights ([download from HuggingFace](https://huggingface.co/westlake-repl/Cryo-IEF/tree/main/cryo_ief_checkpoint/DECO_ief_vit_s)) |
 
 > **Recommendation:** For efficient training and inference, we strongly recommend **downsampling input particles to a box size of 128 pixels**. ([Guide: How to downsample in CryoSPARC](readmes/downsample.md))
 
@@ -63,31 +63,36 @@ pretrained_model_path='/path/to/checkpoint/'  # Path to Cryo-IEF weights
 
 ### Optional Hyperparameters
 
-#### Latent Dimension (`feature_dim`)
+#### Adaptive Structural Latent Capacity
 
-The latent dimension `z` is a hyperparameter that can be changed to achieve best classification performance:
+CryoDECO starts with a maximum structural latent capacity (`feature_dim`, or
+`D_cap`) of 64 and uses DimAda to learn the decoder-visible capacity `D_act` for
+the input dataset. The structural-z gate and AdaLN-conditioned decoder are
+enabled by default and normally do not need tuning.
 
-| Heterogeneity Type | Recommended `feature_dim` | Rationale |
-|---|---|---|
-| Compositional (discrete states) | `128` | High dimensionality ensures orthogonality between disjoint structures |
-| Conformational — simple motion | `4` | Low dimensionality enforces smoothness on a simple manifold |
-| Conformational — complex motion | `64` | Intermediate dimension balances expressiveness and regularity |
+| Parameter | Default | Description |
+|---|---:|---|
+| `feature_dim` | `64` | Maximum structural latent capacity, `D_cap`. |
+| `structural_z_gate_enabled` | `True` | Learn `D_act`. Disable for fixed-z ablations or old-model compatibility. |
+| `decoder_adaln_enabled` | `True` | Condition residual decoder blocks on the gated structural latent. Disable for decoder ablations. |
 
-```yaml
-feature_dim=128   # Default: 128
-```
+The learned capacity and locked mask are written to `out/structural_z.json` and
+stored in every model checkpoint.
 
 #### Clustering
 
 The pipeline clusters learned latent features to generate initial volumes.
+The automatic partition-count estimator described in the manuscript is not yet
+included in this release, so discrete compositional analysis still requires
+`k_num` to be supplied by the user.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `k_num` | `8` | Number of clusters. For compositional heterogeneity, set to the expected number of distinct species. For conformational, controls the number of maps sampled from latent space. |
+| `k_num` | `4` | Number of clusters. Set this to the expected number of discrete groups; `4` is an example setting, not a universal recommendation. |
 | `clustering_type` | `'gmm'` | Clustering algorithm. `'gmm'` (Gaussian Mixture Model) is more accurate; `'k-means++'` is much faster. |
 
 ```yaml
-k_num=8               # Default: 8
+k_num=4               # Example/default; adjust for the dataset
 clustering_type='gmm' # Default: 'gmm'. Option: 'k-means++'
 ```
 
@@ -109,7 +114,7 @@ Batch sizes are tuned for an **NVIDIA A40 (40 GB)**. Adjust based on your availa
 ```yaml
 epochs_sgd=100        # Default: 100. Decrease for very large datasets (>1M particles).
 batch_size_hps=22     # Batch size for Hierarchical Pose Search (per GPU)
-batch_size_sgd=192    # Batch size for SGD Refinement (per GPU)
+batch_size_sgd=64     # Batch size for SGD Refinement (per GPU)
 ```
 
 ---
@@ -121,8 +126,8 @@ accelerate launch --mixed_precision=bf16 CryoDECO_run.py \
     --particles $particles \
     --outdir $outdir \
     --pretrained_model_path $pretrained_model_path \
-    --feature_dim 128 \
-    --k_num 8 \
+    --feature_dim 64 \
+    --k_num 4 \
     --clustering_type 'gmm' \
     --epochs_sgd 100
 ```
@@ -165,8 +170,8 @@ accelerate launch --mixed_precision=bf16 CryoDECO_run.py \
     --particles $particles \
     --outdir $outdir \
     --pretrained_model_path $pretrained_model_path \
-    --feature_dim 128 \
-    --k_num 8 \
+    --feature_dim 64 \
+    --k_num 4 \
     --clustering_type 'gmm' \
     --skip_train True
 ```
