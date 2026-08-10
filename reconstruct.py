@@ -521,7 +521,6 @@ class ModelTrainer:
                     gate.locked_mask.fill_(1.0)
                     gate.mask_locked.fill_(True)
                     gate.anneal_alpha.fill_(1.0)
-                gate.raw_gate.requires_grad_(False)
                 self.accelerator.print("Legacy checkpoint detected: structural-z uses an all-open fixed mask.")
             self.start_epoch = checkpoint['epoch'] + 1 if not self.post_training else 0
 
@@ -1197,8 +1196,11 @@ class ModelTrainer:
             self.run_times['to_gpu'].append(time.time() - start_time_gpu)
 
         # zero grad
-        for key in self.optimized_modules:
-            self.optimizers[key].zero_grad()
+        # Parameters owned by an optimizer that is temporarily not stepped
+        # can still participate in a DDP forward. Clear every optimizer so
+        # their reduced zero/fixed-stage gradients never accumulate.
+        for optimizer in self.optimizers.values():
+            optimizer.zero_grad()
 
         # forward pass
         latent_variables_dict, y_pred, y_gt_processed = self.forward_pass(

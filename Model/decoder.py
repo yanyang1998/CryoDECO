@@ -44,7 +44,11 @@ class StructuralZGate(nn.Module):
     def effective_gate(self, z=None):
         gate = self.gate(z)
         if not bool(self.gate_active.item()):
-            return torch.ones_like(gate)
+            # Keep raw_gate in the autograd graph during the warm-up bypass.
+            # DDP otherwise treats it as an unused parameter and fails on the
+            # following iteration.  The zero-valued term preserves the exact
+            # all-open behavior while producing a zero (not missing) gradient.
+            return torch.ones_like(gate) + 0.0 * gate
         if not bool(self.mask_locked.item()):
             return gate
         mask = self.locked_mask.to(dtype=gate.dtype, device=gate.device)
@@ -954,8 +958,6 @@ class HyperVolume(nn.Module):
             alpha = 1.0 if hard_anneal_epochs <= 0 else min(
                 max((float(epoch) - hard_start_epoch) / hard_anneal_epochs, 0.0), 1.0)
             gate.anneal_alpha.fill_(alpha)
-            if alpha >= 1.0:
-                gate.raw_gate.requires_grad_(False)
 
     def random_fourier_encoding(self, x):
         """
