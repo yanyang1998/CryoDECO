@@ -1052,6 +1052,20 @@ class ModelTrainer:
                 f" conf_table_lr: {conf_table_lr} "
                 f"conf_encoder_lr: {conf_encoder_lr} "
             )
+            hypervolume = (self.hypervolume.module
+                           if hasattr(self.hypervolume, 'module') else self.hypervolume)
+            gate_module = getattr(hypervolume, 'structural_z_gate', None)
+            if gate_module is not None:
+                self.accelerator.print(
+                    f"# =====> DimAda Epoch: {self.epoch} "
+                    f"D_act={gate_module.active_dim}/{gate_module.raw_gate.numel()} "
+                    f"mask_locked={bool(gate_module.mask_locked.item())}"
+                )
+            else:
+                self.accelerator.print(
+                    f"# =====> DimAda Epoch: {self.epoch} disabled; "
+                    f"D_act={self.configs.z_dim}/{self.configs.z_dim} (fixed-z)"
+                )
 
             # image and pose summary
             self.accelerator.wait_for_everyone()
