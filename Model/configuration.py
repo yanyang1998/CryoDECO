@@ -347,7 +347,7 @@ class TrainingConfigurations(_BaseConfigurations):
     # clustering
     moe_num: int = 2
     clustering_start_epoch: int = 0
-    clustering_type: str = 'hierarchical'
+    clustering_type: str = 'k-means++'
 
     # Data Augmentation for Encoder Input
     augmentation_settings = OrderedDict(
@@ -542,7 +542,7 @@ class AnalysisConfigurations(_BaseConfigurations):
     pc: int = 2
     n_per_pc: int = 10
     k_num: int = 20
-    clustering_type: str='k-means'
+    clustering_type: str='gmm'
     invert: bool = True
     sample_z_idx: int = None
     trajectory_1d: int = None

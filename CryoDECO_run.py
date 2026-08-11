@@ -114,7 +114,7 @@ def settings():
             'k_init': 4,
             'clustering_dim': 16,
             'cluster_num_evaluate': 0,
-            'clustering_type': 'gmm',
+            'clustering_type': 'k-means++',
             'use_clustering_route': False,
 
             # pretrain with processed data
@@ -555,6 +555,10 @@ def main():
     configs['train_settings']['structural_z_gate_lr'] *= gate_lr_scale
     accelerator.print(f"Learning-rate scaling: base={base_lrs}, effective_scale={lr_scale}, "
                       f"gate_scale={gate_lr_scale}")
+    accelerator.print(
+        f"Training evaluation clustering: {configs['train_settings']['clustering_type']}")
+    accelerator.print(
+        f"Final analysis clustering: {configs['analysis_settings']['clustering_type']}")
     accelerator.print(json.dumps(configs, indent=4,default=str))
     trainer = ModelTrainer(configs['outdir'], configs['train_settings'],
                            load=configs['load'] if not configs['analysis_settings']['skip_train'] else True,
