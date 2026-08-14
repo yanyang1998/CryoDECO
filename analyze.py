@@ -752,6 +752,11 @@ class ModelAnalyzer:
         hypervolume = decoder.HyperVolume(**hypervolume_params)
         hypervolume_state = checkpoint['hypervolume_state_dict']
         hypervolume.load_state_dict(hypervolume_state, strict=False)
+        if ('structural_z_gate.raw_gate' in hypervolume_state
+                and 'structural_z_gate.prune_order' not in hypervolume_state
+                and hypervolume.structural_z_gate is not None):
+            hypervolume.structural_z_hard_gate_curriculum_mode = 'simultaneous'
+            hypervolume.structural_z_gate.curriculum_mode = 'simultaneous'
         if ('structural_z_gate.raw_gate' not in hypervolume_state
                 and hypervolume.structural_z_gate is not None):
             gate = hypervolume.structural_z_gate

@@ -302,6 +302,11 @@ class TrainingConfigurations(_BaseConfigurations):
     structural_z_hard_gate_threshold: float = 0.5
     structural_z_hard_gate_anneal_epochs: int = 5
     structural_z_hard_gate_min_active_dim: int = 4
+    structural_z_hard_gate_curriculum_mode: str = "progressive_dimension"
+    structural_z_hard_gate_auto_advance_enabled: bool = True
+    structural_z_hard_gate_particle_scaling_enabled: bool = True
+    structural_z_hard_gate_reference_particles: int = 100000
+    structural_z_hard_gate_scale_max_epoch: int = 70
 
     pe_type: str = "gaussian"
     pe_dim: int = 32
@@ -409,6 +414,15 @@ class TrainingConfigurations(_BaseConfigurations):
             raise ValueError("structural-z epoch and dimension settings must be non-negative")
         if self.decoder_adaln_scale < 0.0:
             raise ValueError("decoder_adaln_scale must be non-negative")
+        if self.structural_z_hard_gate_curriculum_mode not in {
+                "progressive_dimension", "simultaneous"}:
+            raise ValueError("structural_z_hard_gate_curriculum_mode must be one of "
+                             "{'progressive_dimension', 'simultaneous'}")
+        if self.structural_z_hard_gate_reference_particles <= 0:
+            raise ValueError("structural_z_hard_gate_reference_particles must be positive")
+        if self.structural_z_hard_gate_scale_max_epoch < self.structural_z_warmup_epochs + 5:
+            raise ValueError("structural_z_hard_gate_scale_max_epoch must be at least "
+                             "structural_z_warmup_epochs + 5")
         if self.decoder_adaln_enabled and self.decoder_type != 'mlp':
             raise ValueError("decoder_adaln_enabled currently requires decoder_type='mlp'")
 

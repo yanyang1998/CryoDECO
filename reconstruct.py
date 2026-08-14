@@ -37,6 +37,23 @@ from Data.mask import CircularMask, FrequencyMarchingMask
 from accelerate.utils import broadcast
 
 
+def scale_structural_z_hard_gate_epoch(epoch, n_particles, warmup_epochs,
+                                        enabled=True, reference_particles=100000,
+                                        max_epoch=70):
+    """Scale a planned structural-z lock epoch by the dataset particle count."""
+    if n_particles <= 0:
+        raise ValueError("n_particles must be positive")
+    if reference_particles <= 0:
+        raise ValueError("reference_particles must be positive")
+    if not enabled:
+        return int(epoch)
+    min_epoch = int(warmup_epochs) + 5
+    if int(max_epoch) < min_epoch:
+        raise ValueError("max_epoch must be at least structural-z warmup_epochs + 5")
+    scaled = round(float(epoch) * int(reference_particles) / int(n_particles))
+    return min(max(int(scaled), min_epoch), int(max_epoch))
+
+
 class ModelTrainer:
 
     # options for optimizers to use
@@ -270,6 +287,50 @@ class ModelTrainer:
         )
 
         self.n_particles_dataset = self.data.N
+        saved_structural_z = checkpoint.get('structural_z') if checkpoint is not None else None
+        if (resume and saved_structural_z is not None
+                and 'effective_lock_epoch' in saved_structural_z):
+            self.structural_z_hard_gate_base_epoch = int(saved_structural_z.get(
+                'base_lock_epoch', self.configs.structural_z_hard_gate_start_epoch))
+            self.structural_z_hard_gate_effective_epoch = int(
+                saved_structural_z['effective_lock_epoch'])
+            self.structural_z_hard_gate_schedule_particle_count = int(
+                saved_structural_z.get('particle_count', self.n_particles_dataset))
+            self.structural_z_hard_gate_schedule_reference_particles = int(
+                saved_structural_z.get(
+                    'reference_particles',
+                    self.configs.structural_z_hard_gate_reference_particles))
+            self.structural_z_hard_gate_schedule_scaling_enabled = bool(
+                saved_structural_z.get(
+                    'particle_scaling_enabled',
+                    self.configs.structural_z_hard_gate_particle_scaling_enabled))
+            schedule_source = 'checkpoint'
+        else:
+            self.structural_z_hard_gate_base_epoch = int(
+                self.configs.structural_z_hard_gate_start_epoch)
+            self.structural_z_hard_gate_effective_epoch = scale_structural_z_hard_gate_epoch(
+                self.structural_z_hard_gate_base_epoch,
+                self.n_particles_dataset,
+                self.configs.structural_z_warmup_epochs,
+                enabled=self.configs.structural_z_hard_gate_particle_scaling_enabled,
+                reference_particles=self.configs.structural_z_hard_gate_reference_particles,
+                max_epoch=self.configs.structural_z_hard_gate_scale_max_epoch)
+            self.structural_z_hard_gate_schedule_particle_count = self.n_particles_dataset
+            self.structural_z_hard_gate_schedule_reference_particles = int(
+                self.configs.structural_z_hard_gate_reference_particles)
+            self.structural_z_hard_gate_schedule_scaling_enabled = bool(
+                self.configs.structural_z_hard_gate_particle_scaling_enabled)
+            schedule_source = 'computed'
+        scale = (self.structural_z_hard_gate_schedule_reference_particles
+                 / self.structural_z_hard_gate_schedule_particle_count)
+        self.accelerator.print(
+            "Structural-z particle scaling: "
+            f"particles={self.n_particles_dataset}, "
+            f"base_epoch={self.structural_z_hard_gate_base_epoch}, "
+            f"scale={scale:.6g}, "
+            f"effective_epoch={self.structural_z_hard_gate_effective_epoch}, "
+            f"enabled={self.structural_z_hard_gate_schedule_scaling_enabled}, "
+            f"source={schedule_source}")
         self.n_tilts_dataset = (self.data.Nt
                                 if self.configs.subtomogram_averaging
                                 else self.data.N)
@@ -418,6 +479,11 @@ class ModelTrainer:
             'structural_z_gate_enabled': self.configs.structural_z_gate_enabled,
             'structural_z_gate_init': self.configs.structural_z_gate_init,
             'structural_z_gate_init_noise': self.configs.structural_z_gate_init_noise,
+            'structural_z_hard_gate_curriculum_mode': (
+                self.configs.structural_z_hard_gate_curriculum_mode if checkpoint is None
+                else checkpoint['hypervolume_params'].get(
+                    'structural_z_hard_gate_curriculum_mode',
+                    self.configs.structural_z_hard_gate_curriculum_mode)),
         }
 
         self.will_use_point_estimates = self.configs.epochs_sgd >= 1
@@ -477,6 +543,8 @@ class ModelTrainer:
                                            structural_z_gate_enabled=hyper_volume_params['structural_z_gate_enabled'],
                                            structural_z_gate_init=hyper_volume_params['structural_z_gate_init'],
                                            structural_z_gate_init_noise=hyper_volume_params['structural_z_gate_init_noise'],
+                                           structural_z_hard_gate_curriculum_mode=hyper_volume_params[
+                                               'structural_z_hard_gate_curriculum_mode'],
                                            )
         else:
             self.hypervolume = VolumeExplicit(self.lattice.D, hyper_volume_params['domain'],
@@ -511,8 +579,18 @@ class ModelTrainer:
 
                 self.accelerator.print(msg)
 
-            filtered_state_dict_decoder = self.filter_state_dict(checkpoint['hypervolume_state_dict'],self.hypervolume.state_dict())
+            gate_state = checkpoint['hypervolume_state_dict']
+            legacy_progressive_state = (
+                'structural_z_gate.raw_gate' in gate_state
+                and 'structural_z_gate.prune_order' not in gate_state)
+            filtered_state_dict_decoder = self.filter_state_dict(gate_state,self.hypervolume.state_dict())
             self.accelerator.print(self.hypervolume.load_state_dict(filtered_state_dict_decoder, strict=False))
+            if legacy_progressive_state:
+                self.configs.structural_z_hard_gate_curriculum_mode = 'simultaneous'
+                self.hypervolume.structural_z_hard_gate_curriculum_mode = 'simultaneous'
+                self.hypervolume.structural_z_gate.curriculum_mode = 'simultaneous'
+                self.accelerator.print(
+                    "Legacy structural-z checkpoint detected: resuming with simultaneous annealing.")
             if ('structural_z_gate.raw_gate' not in checkpoint['hypervolume_state_dict']
                     and getattr(self.hypervolume, 'structural_z_gate', None) is not None):
                 gate = self.hypervolume.structural_z_gate
@@ -852,12 +930,18 @@ class ModelTrainer:
             self.optimized_modules = ['hypervolume']
             hypervolume = self.hypervolume.module if hasattr(self.hypervolume, 'module') else self.hypervolume
             if hasattr(hypervolume, 'configure_structural_z'):
-                hypervolume.configure_structural_z(
+                auto_advanced = hypervolume.configure_structural_z(
                     self.epoch, self.configs.structural_z_warmup_epochs,
-                    self.configs.structural_z_hard_gate_start_epoch,
+                    self.structural_z_hard_gate_effective_epoch,
                     self.configs.structural_z_hard_gate_anneal_epochs,
                     self.configs.structural_z_hard_gate_threshold,
-                    self.configs.structural_z_hard_gate_min_active_dim)
+                    self.configs.structural_z_hard_gate_min_active_dim,
+                    self.configs.structural_z_hard_gate_curriculum_mode,
+                    self.configs.structural_z_hard_gate_auto_advance_enabled)
+                if auto_advanced:
+                    self.accelerator.print(
+                        "Auto-advancing structural-z hard gate: "
+                        f"epoch={self.epoch}, D_act={hypervolume.structural_z_gate.active_dim}")
             gate_module = getattr(hypervolume, 'structural_z_gate', None)
             if (gate_module is not None and bool(gate_module.gate_active.item())
                     and not bool(gate_module.mask_locked.item())
@@ -1003,6 +1087,12 @@ class ModelTrainer:
             # inner loop
             for batch_idx, in_dict in enumerate(data_generator):
                 self.batch_idx = batch_idx
+                hypervolume = (self.hypervolume.module
+                               if hasattr(self.hypervolume, 'module') else self.hypervolume)
+                if hasattr(hypervolume, 'update_structural_z_anneal'):
+                    hypervolume.update_structural_z_anneal(
+                        self.epoch + batch_idx / len(data_generator),
+                        self.configs.structural_z_hard_gate_anneal_epochs)
                 # print('1 batch_idx:', batch_idx)
                 # with torch.autograd.detect_anomaly():
                 if 'conf_table' in self.optimizers and 'conf_table' in self.optimized_modules:
@@ -1693,6 +1783,16 @@ class ModelTrainer:
             'd_act': gate_module.active_dim,
             'mask_locked': bool(gate_module.mask_locked.item()),
             'anneal_alpha': float(gate_module.anneal_alpha.item()),
+            'curriculum_mode': gate_module.curriculum_mode,
+            'auto_advance_epoch': int(gate_module.auto_advance_epoch.item()),
+            'auto_advance_active_dim': int(gate_module.auto_advance_active_dim.item()),
+            'actual_lock_epoch': int(gate_module.actual_lock_epoch.item()),
+            'transition_start_epoch': float(gate_module.transition_start_epoch.item()),
+            'base_lock_epoch': self.structural_z_hard_gate_base_epoch,
+            'effective_lock_epoch': self.structural_z_hard_gate_effective_epoch,
+            'particle_count': self.structural_z_hard_gate_schedule_particle_count,
+            'reference_particles': self.structural_z_hard_gate_schedule_reference_particles,
+            'particle_scaling_enabled': self.structural_z_hard_gate_schedule_scaling_enabled,
         } if gate_module is not None else None)
 
         if hasattr(self.output_mask, 'current_radius'):
@@ -1710,6 +1810,16 @@ class ModelTrainer:
                     'gate_mean': float(gate.mean()),
                     'mask_locked': bool(gate_module.mask_locked.item()),
                     'anneal_alpha': float(gate_module.anneal_alpha.item()),
+                    'curriculum_mode': gate_module.curriculum_mode,
+                    'auto_advance_epoch': int(gate_module.auto_advance_epoch.item()),
+                    'auto_advance_active_dim': int(gate_module.auto_advance_active_dim.item()),
+                    'actual_lock_epoch': int(gate_module.actual_lock_epoch.item()),
+                    'transition_progress': float(gate_module.anneal_alpha.item()),
+                    'base_lock_epoch': self.structural_z_hard_gate_base_epoch,
+                    'effective_lock_epoch': self.structural_z_hard_gate_effective_epoch,
+                    'particle_count': self.structural_z_hard_gate_schedule_particle_count,
+                    'reference_particles': self.structural_z_hard_gate_schedule_reference_particles,
+                    'particle_scaling_enabled': self.structural_z_hard_gate_schedule_scaling_enabled,
                     'gate': gate.tolist(),
                     'hard_mask': gate_module.locked_mask.detach().cpu().tolist(),
                 }, handle, indent=2)

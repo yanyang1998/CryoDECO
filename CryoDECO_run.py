@@ -84,7 +84,7 @@ def settings():
             'gradient_checkpointing': True,
             'batch_size_hps':22,
             'batch_size_known_poses': 64,
-            'batch_size_sgd': 64,
+            'batch_size_sgd': 128,
             'lazy': False,
 
             # hypervolume
@@ -108,6 +108,11 @@ def settings():
             'structural_z_hard_gate_threshold': 0.5,
             'structural_z_hard_gate_anneal_epochs': 5,
             'structural_z_hard_gate_min_active_dim': 4,
+            'structural_z_hard_gate_curriculum_mode': 'progressive_dimension',
+            'structural_z_hard_gate_auto_advance_enabled': True,
+            'structural_z_hard_gate_particle_scaling_enabled': True,
+            'structural_z_hard_gate_reference_particles': 100000,
+            'structural_z_hard_gate_scale_max_epoch': 70,
             'moe_num': 4,
             'pe_dim': 64,
             'num_shared_experts': 1,
@@ -208,6 +213,19 @@ def main():
     parser.add_argument('--structural_z_hard_gate_threshold', type=float, default=None)
     parser.add_argument('--structural_z_hard_gate_anneal_epochs', type=int, default=None)
     parser.add_argument('--structural_z_hard_gate_min_active_dim', type=int, default=None)
+    parser.add_argument('--structural_z_hard_gate_curriculum_mode', type=str, default=None,
+                        choices=('progressive_dimension', 'simultaneous'),
+                        help='Inactive-dimension annealing mode after structural-z mask lock.')
+    parser.add_argument('--structural_z_hard_gate_auto_advance_enabled',
+                        type=lambda x: x.lower() == 'true', default=None,
+                        help='Lock structural-z early after reaching the minimum active dimension.')
+    parser.add_argument('--structural_z_hard_gate_particle_scaling_enabled',
+                        type=lambda x: x.lower() == 'true', default=None,
+                        help='Scale the planned structural-z lock epoch by dataset particle count.')
+    parser.add_argument('--structural_z_hard_gate_reference_particles', type=int, default=None,
+                        help='Reference dataset size for structural-z lock-epoch scaling.')
+    parser.add_argument('--structural_z_hard_gate_scale_max_epoch', type=int, default=None,
+                        help='Maximum particle-scaled structural-z lock epoch.')
     # parser.add_argument('--attn_sample_num', default=None, type=int)
 
     parser.add_argument('--use_pfm_encoder', type=lambda x: x.lower() == 'true', default=None)
@@ -251,7 +269,12 @@ def main():
         'structural_z_gate_budget_target_mean', 'structural_z_gate_budget_weight',
         'structural_z_gate_polar_weight', 'structural_z_hard_gate_start_epoch',
         'structural_z_hard_gate_threshold', 'structural_z_hard_gate_anneal_epochs',
-        'structural_z_hard_gate_min_active_dim')
+        'structural_z_hard_gate_min_active_dim', 'structural_z_hard_gate_curriculum_mode',
+        'structural_z_hard_gate_auto_advance_enabled')
+    adaptive_args += (
+        'structural_z_hard_gate_particle_scaling_enabled',
+        'structural_z_hard_gate_reference_particles',
+        'structural_z_hard_gate_scale_max_epoch')
     for name in adaptive_args:
         value = getattr(args, name)
         if value is not None:

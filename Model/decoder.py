@@ -26,13 +26,21 @@ class StructuralZGate(nn.Module):
         self.register_buffer("mask_locked", torch.tensor(False))
         self.register_buffer("anneal_alpha", torch.tensor(0.0))
         self.register_buffer("gate_active", torch.tensor(True))
+        self.register_buffer("prune_order", torch.full((int(z_dim),), -1, dtype=torch.long))
+        self.register_buffer("prune_importance", torch.zeros(int(z_dim), dtype=torch.float32))
+        self.register_buffer("prune_count", torch.tensor(0, dtype=torch.long))
+        self.register_buffer("actual_lock_epoch", torch.tensor(-1, dtype=torch.long))
+        self.register_buffer("transition_start_epoch", torch.tensor(-1.0))
+        self.register_buffer("auto_advance_epoch", torch.tensor(-1, dtype=torch.long))
+        self.register_buffer("auto_advance_active_dim", torch.tensor(-1, dtype=torch.long))
+        self.curriculum_mode = "progressive_dimension"
 
     def gate(self, z=None):
         gate = torch.sigmoid(self.raw_gate)
         return gate if z is None else gate.to(dtype=z.dtype, device=z.device)
 
     @torch.no_grad()
-    def lock_mask(self, threshold=0.5, min_active_dim=4):
+    def lock_mask(self, threshold=0.5, min_active_dim=4, epoch=None, auto_advanced=False):
         gate = self.gate()
         mask = gate >= float(threshold)
         keep = min(max(int(min_active_dim), 0), gate.numel())
@@ -40,6 +48,47 @@ class StructuralZGate(nn.Module):
             mask[torch.topk(gate, keep).indices] = True
         self.locked_mask.copy_(mask.to(self.locked_mask.dtype))
         self.mask_locked.fill_(True)
+        inactive = torch.nonzero(~mask, as_tuple=False).flatten()
+        inactive = inactive[torch.argsort(gate[inactive], stable=True)]
+        count = inactive.numel()
+        self.prune_order.fill_(-1)
+        self.prune_importance.zero_()
+        if count:
+            self.prune_order[:count].copy_(inactive)
+            self.prune_importance[:count].copy_(gate[inactive])
+        self.prune_count.fill_(count)
+        if epoch is not None:
+            self.actual_lock_epoch.fill_(int(epoch))
+            self.transition_start_epoch.fill_(float(epoch))
+            if auto_advanced:
+                self.auto_advance_epoch.fill_(int(epoch))
+                self.auto_advance_active_dim.fill_(int(mask.sum().item()))
+
+    def _progressive_scale(self, gate):
+        count = int(self.prune_count.item())
+        scale = torch.ones_like(gate)
+        if count == 0:
+            return scale
+        order = self.prune_order[:count].to(device=gate.device)
+        importance = self.prune_importance[:count].to(dtype=torch.float64, device=gate.device)
+        if not bool(torch.all(torch.isfinite(importance) & (importance > 0)).item()):
+            importance = torch.ones_like(importance)
+        weights = importance / importance.sum()
+        cumulative = torch.cumsum(weights, dim=0)
+        alpha = min(max(float(self.anneal_alpha.item()), 0.0), 1.0)
+        if alpha >= 1.0:
+            scale[order] = 0.0
+            return scale
+        alpha_tensor = torch.tensor(alpha, dtype=cumulative.dtype, device=cumulative.device)
+        fully_pruned = int(torch.searchsorted(cumulative, alpha_tensor, right=True).item())
+        if fully_pruned:
+            scale[order[:fully_pruned]] = 0.0
+        if fully_pruned < count and alpha > 0.0:
+            before = 0.0 if fully_pruned == 0 else float(cumulative[fully_pruned - 1].item())
+            duration = float(weights[fully_pruned].item())
+            fade = min(max((alpha - before) / duration, 0.0), 1.0)
+            scale[order[fully_pruned]] = 0.5 * (1.0 + float(np.cos(np.pi * fade)))
+        return scale
 
     def effective_gate(self, z=None):
         gate = self.gate(z)
@@ -51,6 +100,8 @@ class StructuralZGate(nn.Module):
             return torch.ones_like(gate) + 0.0 * gate
         if not bool(self.mask_locked.item()):
             return gate
+        if self.curriculum_mode == "progressive_dimension":
+            return gate * self._progressive_scale(gate)
         mask = self.locked_mask.to(dtype=gate.dtype, device=gate.device)
         alpha = self.anneal_alpha.to(dtype=gate.dtype, device=gate.device)
         return gate * (mask + (1.0 - alpha) * (1.0 - mask))
@@ -826,7 +877,8 @@ class HyperVolume(nn.Module):
                  feature_fuse_indices=None, decoder_ln=True,
                  structural_z_gate_enabled=True, structural_z_gate_init=0.95,
                  structural_z_gate_init_noise=0.02, decoder_adaln_enabled=True,
-                 decoder_adaln_condition_norm=True, decoder_adaln_scale=0.5):
+                 decoder_adaln_condition_norm=True, decoder_adaln_scale=0.5,
+                 structural_z_hard_gate_curriculum_mode='progressive_dimension'):
         """
         resolution: int
         z_dim: int
@@ -844,6 +896,9 @@ class HyperVolume(nn.Module):
         self.structural_z_gate_enabled = bool(structural_z_gate_enabled and z_dim > 0)
         self.structural_z_gate = (StructuralZGate(z_dim, structural_z_gate_init, structural_z_gate_init_noise)
                                   if self.structural_z_gate_enabled else None)
+        self.structural_z_hard_gate_curriculum_mode = structural_z_hard_gate_curriculum_mode
+        if self.structural_z_gate is not None:
+            self.structural_z_gate.curriculum_mode = structural_z_hard_gate_curriculum_mode
         self.decoder_adaln_enabled = bool(decoder_adaln_enabled and z_dim > 0)
         self.decoder_adaln_condition_norm = bool(decoder_adaln_condition_norm)
         self.decoder_adaln_scale = float(decoder_adaln_scale)
@@ -947,17 +1002,41 @@ class HyperVolume(nn.Module):
         return None if self.structural_z_gate is None else self.structural_z_gate.gate()
 
     def configure_structural_z(self, epoch, warmup_epochs=5, hard_start_epoch=50,
-                               hard_anneal_epochs=5, threshold=0.5, min_active_dim=4):
+                               hard_anneal_epochs=5, threshold=0.5, min_active_dim=4,
+                               curriculum_mode='progressive_dimension', auto_advance_enabled=True):
         if self.structural_z_gate is None:
             return
         gate = self.structural_z_gate
+        gate.curriculum_mode = curriculum_mode
+        self.structural_z_hard_gate_curriculum_mode = curriculum_mode
         gate.gate_active.fill_(int(epoch) >= int(warmup_epochs))
-        if int(epoch) >= int(hard_start_epoch) and not bool(gate.mask_locked.item()):
-            gate.lock_mask(threshold, min_active_dim)
+        auto_advance = (auto_advance_enabled and bool(gate.gate_active.item())
+                        and int(epoch) < int(hard_start_epoch)
+                        and gate.active_dim <= int(min_active_dim))
+        if ((int(epoch) >= int(hard_start_epoch) or auto_advance)
+                and not bool(gate.mask_locked.item())):
+            gate.lock_mask(threshold, min_active_dim, epoch=epoch,
+                           auto_advanced=auto_advance)
         if bool(gate.mask_locked.item()):
+            lock_epoch = int(gate.actual_lock_epoch.item())
+            if lock_epoch < 0:
+                lock_epoch = int(hard_start_epoch)
             alpha = 1.0 if hard_anneal_epochs <= 0 else min(
-                max((float(epoch) - hard_start_epoch) / hard_anneal_epochs, 0.0), 1.0)
+                max((float(epoch) - lock_epoch) / hard_anneal_epochs, 0.0), 1.0)
             gate.anneal_alpha.fill_(alpha)
+        return auto_advance
+
+    def update_structural_z_anneal(self, progress, hard_anneal_epochs=5):
+        """Advance a locked structural-z curriculum at batch-level resolution."""
+        gate = self.structural_z_gate
+        if gate is None or not bool(gate.mask_locked.item()):
+            return
+        lock_epoch = int(gate.actual_lock_epoch.item())
+        if lock_epoch < 0:
+            return
+        alpha = 1.0 if hard_anneal_epochs <= 0 else min(
+            max((float(progress) - lock_epoch) / hard_anneal_epochs, 0.0), 1.0)
+        gate.anneal_alpha.fill_(alpha)
 
     def random_fourier_encoding(self, x):
         """
@@ -1006,6 +1085,7 @@ class HyperVolume(nn.Module):
             'decoder_adaln_enabled': self.decoder_adaln_enabled,
             'decoder_adaln_condition_norm': self.decoder_adaln_condition_norm,
             'decoder_adaln_scale': self.decoder_adaln_scale,
+            'structural_z_hard_gate_curriculum_mode': self.structural_z_hard_gate_curriculum_mode,
         }
         return building_params
 
