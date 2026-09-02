@@ -566,3 +566,12 @@ class AnalysisConfigurations(_BaseConfigurations):
     data_resample: int=None
     k_init: int=32
     umap_dim: int=4
+
+    # --- adaptive K estimation (Analyse.k_estimator) ---
+    k_num_auto: bool = False
+    k_num_auto_initial_max_k: int = 30
+    k_num_auto_enable_split: bool = True
+    k_num_auto_seed: int = 42
+    k_num_auto_umap_dim: int = 16
+    k_num_auto_max_samples: int = 20000
+    k_num_auto_run_plot: bool = False

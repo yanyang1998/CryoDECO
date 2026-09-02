@@ -43,6 +43,31 @@ TEMPLATE_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'templates')
 
 
+def _prepare_auto_k_features(outdir, z, umap_dim=16, max_samples=20000, seed=0):
+    z = np.asarray(z)
+    n_components = min(int(umap_dim), max(2, z.shape[1] - 1))
+
+    reducer = UMAP(n_components=n_components, random_state=int(seed))
+    z_umap = reducer.fit_transform(z)
+
+    if outdir:
+        cache_path = os.path.join(outdir, f"umap_{n_components}.pkl")
+        os.makedirs(outdir, exist_ok=True)
+        utils.save_pkl(z_umap, cache_path)
+        print(f"[_prepare_auto_k_features] saved UMAP shape={z_umap.shape} -> {cache_path}")
+
+    n = z_umap.shape[0]
+    if n > max_samples:
+        rng = np.random.default_rng(int(seed))
+        sample_idx = rng.choice(n, size=int(max_samples), replace=False)
+        z_for_k = z_umap[sample_idx]
+    else:
+        sample_idx = np.arange(n)
+        z_for_k = z_umap
+
+    return z_for_k, z_umap, sample_idx
+
+
 class Clustering_tool:
     def __init__(self, data_num, n_clusters, labels_true=None, k_init=32, clustering_dim=4, cs_path=None, n_sample=400,
                  clustering_type='hierarchical'):
@@ -749,6 +774,21 @@ class ModelAnalyzer:
         checkpoint = torch.load(checkpoint_path, weights_only=False)
 
         hypervolume_params = checkpoint['hypervolume_params']
+        # Forward-compat: drop keys that the current HyperVolume.__init__ does not accept
+        # (older checkpoints may have been saved with newer schema fields).
+        # try:
+        #     import inspect
+        #     _allowed = set(inspect.signature(decoder.HyperVolume.__init__).parameters) - {'self'}
+        #     _dropped = [k for k in hypervolume_params if k not in _allowed]
+        #     if _dropped:
+        #         self.logger.info(
+        #             "Dropping unknown HyperVolume kwargs from older checkpoint: "
+        #             + ", ".join(_dropped)
+        #         )
+        #     hypervolume_params = {k: v for k, v in hypervolume_params.items() if k in _allowed}
+        # except Exception as e:
+        #     self.logger.warning(f"Could not introspect HyperVolume signature, passing params as-is: {e}")
+        
         hypervolume = decoder.HyperVolume(**hypervolume_params)
         hypervolume_state = checkpoint['hypervolume_state_dict']
         hypervolume.load_state_dict(hypervolume_state, strict=False)
@@ -958,10 +998,84 @@ class ModelAnalyzer:
             # self.vg.gen_volumes(volpath, z_pc, route_labels=self.get_route(z_pc),intermidiate_features=intermidiate_features)
             self.generate_vols(volpath, z_pc, route_labels=self.get_route(z_pc))
 
+        # ---- adaptive K estimation (optional) ----------------------------
+        effective_k = int(self.configs.k_num)
+        if self.configs.k_num_auto and self.z is not None and self.n_samples >= 3:
+            from Analyse.k_estimator import estimate_k, write_auto_k_json
+
+            z_for_k = self.z[self.data_resample_id] if self.data_resample_id is not None else self.z
+            z_for_k, _, auto_k_sample_idx = _prepare_auto_k_features(
+                self.outdir,
+                z_for_k,
+                umap_dim=int(self.configs.k_num_auto_umap_dim),
+                max_samples=int(self.configs.k_num_auto_max_samples),
+                seed=int(self.configs.k_num_auto_seed))
+            
+            self.logger.info(
+                f"[auto-k] running estimate_k on UMAP-{self.configs.k_num_auto_umap_dim} "
+                f"features, shape={z_for_k.shape}, "
+                f"initial_max_k={self.configs.k_num_auto_initial_max_k}, "
+                f"split_check={self.configs.k_num_auto_enable_split}")
+            
+            try:
+                k_est, k_diag = estimate_k(
+                    z_for_k,
+                    initial_max_k=int(self.configs.k_num_auto_initial_max_k),
+                    random_seed=int(self.configs.k_num_auto_seed),
+                    enable_split_check=bool(self.configs.k_num_auto_enable_split))
+            except Exception as e:
+                self.logger.error(f"[auto-k] estimate_k failed: {e}. Falling back to user k_num={effective_k}.")
+                k_est = None
+
+            if k_est is not None:
+                self.logger.info("[auto-k] estimated k = {k_est} (was {self.configs.k_num})")
+                utils.save_pkl(k_diag, os.path.join(self.outdir, "auto_k_diagnostics.pkl"))
+                write_auto_k_json(
+                    os.path.join(self.outdir, "auto_k.json"),
+                    k_estimated=int(k_est),
+                    k_diag=k_diag,
+                    user_k_num=int(self.configs.k_num),
+                    extra_meta={
+                        "umap_dim": int(self.configs.k_num_auto_umap_dim),
+                        "max_samples": int(self.configs.k_num_auto_max_samples),
+                        "initial_max_k": int(self.configs.k_num_auto_initial_max_k),
+                        "enable_split_check": bool(self.configs.k_num_auto_enable_split),
+                        "seed": int(self.configs.k_num_auto_seed),
+                    },
+                )
+                effective_k = int(k_est)
+
+                # Optional visualization: 2-D UMAP before/after the hierarchical
+                if self.configs.k_num_auto_run_plot:
+                    try:
+                        from Analyse.k_estimator_viz import plot_split_comparison
+                        sd = k_diag.get("hierarchical_split") 
+                        labels_before = sd.get("macro_labels")
+                        labels_after = sd.get("split_labels")
+                        macro_k_est = int(k_diag.get("macro_k_estimated"))
+                        if labels_before is not None and labels_after is not None:
+                            from umap import UMAP as _UMAP2D
+                            z_for_plot = self.z[auto_k_sample_idx]
+                            z_2d = _UMAP2D(n_components=2, random_state=int(self.configs.k_num_auto_seed)).fit_transform(z_for_plot)
+                            plot_split_comparison(
+                                z_2d=z_2d,
+                                labels_before=labels_before,
+                                labels_after=labels_after,
+                                macro_k=macro_k_est,
+                                final_k=int(k_est),
+                                outdir=self.outdir,
+                                run_tag="auto_k")
+                        else:
+                            self.logger.info("[auto-k] split labels unavailable, skipping plot.")
+                    except Exception as e:
+                        self.logger.warning(f"[auto-k] plot_split_comparison skipped: {e}")
+            else:
+                self.logger.warning(f"[auto-k] using user k_num={effective_k}")
+
         # kmeans clustering
         print(f'{self.configs.clustering_type} clustering...')
-        k = min(self.configs.k_num, self.n_samples)
-        if self.n_samples < self.configs.k_num:
+        k = min(effective_k, self.n_samples)
+        if self.n_samples < effective_k:
             self.logger.warning(
                 f'Changing k_num to # of samples: {self.n_samples}')
 

@@ -143,7 +143,15 @@ def settings():
             'umap_dim':16,
             'clustering_type': 'gmm',
             'cs_dir_path': None,
-            'data_resample': None
+            'data_resample': None,
+            # adaptive K estimation (Analyse.k_estimator)
+            'k_num_auto': False,
+            'k_num_auto_initial_max_k': 30,
+            'k_num_auto_enable_split': True,
+            'k_num_auto_seed': 42,
+            'k_num_auto_umap_dim': 16,
+            'k_num_auto_max_samples': 20000,
+            'k_num_auto_run_plot': False,
         }
 
     }
@@ -253,6 +261,15 @@ def main():
     parser.add_argument('--num_shared_experts', default=None, type=int)
     parser.add_argument('--k_init', default=None, type=int)
     parser.add_argument('--k_num', default=None, type=int)
+
+    parser.add_argument('--k_num_auto', type=lambda x: x.lower() == 'true', default=None)
+    parser.add_argument('--k_num_auto_initial_max_k', type=int, default=None)
+    parser.add_argument('--k_num_auto_enable_split', type=lambda x: x.lower() == 'true', default=None)
+    parser.add_argument('--k_num_auto_seed', type=int, default=None)
+    parser.add_argument('--k_num_auto_umap_dim', type=int, default=None)
+    parser.add_argument('--k_num_auto_max_samples', type=int, default=None)
+    parser.add_argument('--k_num_auto_run_plot', type=lambda x: x.lower() == 'true', default=None)
+
     parser.add_argument('--clustering_dim', default=None, type=int)
     parser.add_argument('--cluster_num_evaluate', default=None, type=int)
     parser.add_argument('--clustering_type', default=None, type=str)
@@ -440,6 +457,21 @@ def main():
 
     if args.k_num is not None:
         configs['analysis_settings']['k_num'] = args.k_num
+    if args.k_num_auto is not None:
+        configs['analysis_settings']['k_num_auto'] = args.k_num_auto
+    if args.k_num_auto_initial_max_k is not None:
+        configs['analysis_settings']['k_num_auto_initial_max_k'] = args.k_num_auto_initial_max_k
+    if args.k_num_auto_enable_split is not None:
+        configs['analysis_settings']['k_num_auto_enable_split'] = args.k_num_auto_enable_split
+    if args.k_num_auto_seed is not None:
+        configs['analysis_settings']['k_num_auto_seed'] = args.k_num_auto_seed
+        
+    if args.k_num_auto_umap_dim is not None:
+        configs['analysis_settings']['k_num_auto_umap_dim'] = args.k_num_auto_umap_dim
+    if args.k_num_auto_max_samples is not None:
+        configs['analysis_settings']['k_num_auto_max_samples'] = args.k_num_auto_max_samples
+    if args.k_num_auto_run_plot is not None:
+        configs['analysis_settings']['k_num_auto_run_plot'] = args.k_num_auto_run_plot
     if args.clustering_dim is not None:
         configs['train_settings']['clustering_dim'] = args.clustering_dim
     if args.cluster_num_evaluate is not None:
