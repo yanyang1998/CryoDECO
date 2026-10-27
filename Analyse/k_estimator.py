@@ -19,30 +19,30 @@ def load_conf(traindir: str, epoch: int, apply_ind: bool = True):
 
     conf_path = os.path.join(traindir, f"conf.{epoch}.pkl")
     if not os.path.exists(conf_path):
-        raise FileNotFoundError(f"未找到 conf 文件: {conf_path}")
+        raise FileNotFoundError(f"not find conf file: {conf_path}")
 
     z_full = load_pkl(conf_path)
-    print(f"[load_conf] 加载 {conf_path}")
-    print(f"[load_conf] conf 形状: {z_full.shape}, dtype: {z_full.dtype}")
+    print(f"[load_conf] Loading {conf_path}")
+    print(f"[load_conf] conf shape: {z_full.shape}, dtype: {z_full.dtype}")
 
     ind_path = os.path.join(traindir, f"ind_epoch.{epoch}.pkl")
     ind_last_epoch = None
 
     if os.path.exists(ind_path):
         ind_last_epoch = sorted(load_pkl(ind_path))
-        print(f"[load_conf] 加载 {ind_path}")
+        print(f"[load_conf] Loading {ind_path}")
         print(
-            f"[load_conf] ind_epoch 长度: {len(ind_last_epoch)}, "
+            f"[load_conf] ind_epoch length: {len(ind_last_epoch)}, "
             f"min={min(ind_last_epoch)}, max={max(ind_last_epoch)}"
         )
         if apply_ind:
             z_mapped = z_full[ind_last_epoch]
-            print(f"[load_conf] 应用 ind 后 z 形状: {z_mapped.shape}")
+            print(f"[load_conf] z shape after applying ind: {z_mapped.shape}")
         else:
             z_mapped = z_full
-            print("[load_conf] --no_ind 已被指定，跳过 ind 索引")
+            print("[load_conf] --no_ind specified; skipping ind indexing")
     else:
-        print(f"[load_conf] {ind_path} 不存在，按全量粒子使用 conf")
+        print(f"[load_conf] {ind_path} does not exist; using conf for all particles")
         z_mapped = z_full
 
     return z_full, ind_last_epoch, z_mapped
@@ -187,9 +187,9 @@ def ensure_bic(bic_cache, k_values, embeddings, rng, n_resamples=2, n_init=5,
         if k_bics:
             bic_cache[k] = float(np.mean(k_bics))
             newly_computed[k] = bic_cache[k]
-            print(f"[{tag}] K={k:3d} | 协方差: {cov_type:<4} | 均值 BIC = {bic_cache[k]:.1f}")
+            print(f"[{tag}] K={k:3d} | Covariance: {cov_type:<4} | Mean BIC = {bic_cache[k]:.1f}")
         else:
-            print(f" [skip-{tag}] K={k} 全部重采样都失败,跳过")
+            print(f" [skip-{tag}] K={k} All resamples failed; skipping")
 
     return newly_computed
 
@@ -217,7 +217,7 @@ def evaluate_hierarchical_split(embeddings, macro_k, bic_cache, n_init,
     print(f"macro k = {macro_k}")
     print(
         f"max_extra_classes = {max_extra_classes} "
-        f"({'<0: 无限制, 所有通过局部条件的簇都被分裂' if max_extra_classes <= 0 else '=正整数: 最多分裂这么多簇'})")
+        f"({'<0: unlimited; split all clusters that pass the local criteria' if max_extra_classes <= 0 else '=positive integer: maximum number of clusters to split'})")
 
     # ---- 1) Macro fit on all embeddings ------------------------------
     try:
@@ -225,7 +225,7 @@ def evaluate_hierarchical_split(embeddings, macro_k, bic_cache, n_init,
         macro_gmm.fit(embeddings)
         macro_labels = macro_gmm.predict(embeddings)
     except Exception as e:
-        print(f"    [warn] 宏观 GMM 拟合失败: {e}")
+        print(f"    [warn] Macro GMM fit failed: {e}")
         return int(macro_k), diagnostics
 
     unique_labels = sorted(int(x) for x in np.unique(macro_labels).tolist())
@@ -274,7 +274,7 @@ def evaluate_hierarchical_split(embeddings, macro_k, bic_cache, n_init,
             rel_gains.append(delta / (abs(bic_1) + 1e-12))
 
         if not deltas:
-            print(f"  cluster {cid}: 所有 resample 失败, 跳过")
+            print(f"  cluster {cid}: All resamples failed; skipping")
             cluster_diags.append(c_diag)
             continue
 
@@ -328,9 +328,9 @@ def evaluate_hierarchical_split(embeddings, macro_k, bic_cache, n_init,
 
     cap = (max_extra_classes if max_extra_classes > 0 else len(passing))
     print(
-        f"  -> {len(passing)} 个簇通过局部条件, "
-        f"按 split_score 取 top {min(len(passing), cap)} = "
-        f"{n_splits} 个作为分裂目标; "
+        f"  -> {len(passing)} clusters passed the local criteria; "
+        f"selecting the top {min(len(passing), cap)} = "
+        f"{n_splits} clusters by split_score as split targets; "
         f"target_k = macro_k({macro_k}) + n_splits({n_splits}) = {target_k}"
     )
 
@@ -346,7 +346,7 @@ def evaluate_hierarchical_split(embeddings, macro_k, bic_cache, n_init,
             bic_cache[target_k] = float(np.mean(new_bics))
             print(
                 f"    [info] BIC(k+{n_splits}={target_k}) = "
-                f"{bic_cache[target_k]:.1f} (本次新计算并写入 cache)")
+                f"{bic_cache[target_k]:.1f} (newly computed and stored in cache)")
 
     bic_macro = bic_cache.get(int(macro_k))
     bic_target = bic_cache.get(target_k)
@@ -450,8 +450,8 @@ def estimate_k(embeddings,
     n = embeddings.shape[0]
     embeddings_sample = embeddings
 
-    print(f"[Adaptive-K] 数据集大小: {n}")
-    print(f"[Adaptive-K] 主指标 = BIC")
+    print(f"[Adaptive-K] Dataset size: {n}")
+    print(f"[Adaptive-K] Primary metric = BIC")
 
     iteration = 1
     bic_cache = {}
@@ -465,7 +465,7 @@ def estimate_k(embeddings,
     # ------------------------------------------------------------------
     while True:
         print("\n" + "=" * 65)
-        print(f" 迭代 #{iteration} | 范围上限 max_k = {current_max_k} | 当前步长 step = {current_step}")
+        print(f" 迭代 #{iteration} | Upper bound max_k = {current_max_k} | Current step = {current_step}")
         print("=" * 65)
 
         candidates = [1] + list(range(current_step, current_max_k, current_step))
@@ -477,26 +477,26 @@ def estimate_k(embeddings,
         missing_candidates = [k for k in candidates if k not in bic_cache]
 
         if missing_candidates:
-            print(f" -> 检测到未计算的 K 节点: {missing_candidates}，开始计算...")
+            print(f" -> Found unevaluated K candidates: {missing_candidates}; computing...")
             ensure_bic(
                 bic_cache, missing_candidates, embeddings_sample, rng,
                 n_resamples=n_resamples, n_init=n_init,
                 sample_ratio=sample_ratio, random_seed=random_seed,
                 cov_type="full", tag="Coarse")
         else:
-            print(" -> 历史区间候选点 100% 命中缓存，无新增计算！")
+            print(" -> All candidates in the previous range are cached; no additional computation needed!")
 
         active_k_safe = [k for k in active_k if k in bic_cache]
         active_bic = [bic_cache[k] for k in active_k_safe]
 
         # 1. L-method elbow
         best_k = find_elbow_l_method(active_k_safe, active_bic)
-        print(f" -> 当前多尺度网格局部拐点: K = {best_k}")
+        print(f" -> Local elbow on the current multiscale grid: K = {best_k}")
 
         # 2. BIC min
         bic_min_k = min(active_k_safe, key=lambda k: bic_cache[k])
         bic_min = float(bic_cache[bic_min_k])
-        print(f" -> 当前搜索尺度 BIC 最小点: K = {bic_min_k}, BIC = {bic_min:.1f}")
+        print(f" -> BIC minimum at the current search scale: K = {bic_min_k}, BIC = {bic_min:.1f}")
 
         # 3. 保存 diagnostic
         coarse_scale_bic_minima.append({
@@ -511,20 +511,20 @@ def estimate_k(embeddings,
 
         # 4. remaining drop ratio
         remaining_drop_ratio = compute_post_elbow_rate_ratio(bic_cache, best_k, bic_min_k)
-        print(f" -> 该点之后的剩余跌幅比例: {remaining_drop_ratio:.2%}")
+        print(f" -> Remaining drop ratio after this point: {remaining_drop_ratio:.2%}")
 
         # 5. 收敛性判断
         is_converged = (remaining_drop_ratio <= 0.08)
         if is_converged and (best_k < safety_threshold * current_max_k):
-            print(f"\n[Done] 安全终止！拐点锁定在 K = {best_k}")
+            print(f"\n[Done] Safe termination! Elbow identified at K = {best_k}")
             k_elbow = best_k
             break
         else:
-            print(f"[Boundary Alert] 尾部仍有未收敛跌幅 ({remaining_drop_ratio:.2%})，判定为连续崖面。")
+            print(f"[Boundary Alert] The tail still has a non-converged drop ({remaining_drop_ratio:.2%}); classified as a continuing steep decline.")
 
             next_max_k = min(current_max_k * 2, absolute_max_k)
             next_step = 4
-            print(f"自适应双向翻倍: 范围 [{current_max_k} -> {next_max_k}] | 步长 [{current_step} -> {next_step}]")
+            print(f"Adaptive doubling: range [{current_max_k} -> {next_max_k}] | step [{current_step} -> {next_step}]")
             current_max_k = next_max_k
             current_step = next_step
             iteration += 1
@@ -533,7 +533,7 @@ def estimate_k(embeddings,
             rebound_ratio = detect_bic_rebound(active_k_safe, active_bic)
             print(f" -> tail rebound ratio={rebound_ratio:.2f}")
             if rebound_ratio > 0.6:
-                print("检测到 BIC 触底反弹，修正 elbow")
+                print("BIC rebound detected after reaching a minimum; adjusting the elbow")
                 k_elbow = bic_min_k
                 break
 
@@ -557,14 +557,14 @@ def estimate_k(embeddings,
         print("\n" + "=" * 65)
         print(" Refine candidate grid ")
         print("=" * 65)
-        print(f"粗网格拐点 K_coarse = {k_elbow} | 粗网格当前 step = {current_step} | 细化窗口因子 = {refine_window_factor}")
+        print(f"Coarse-grid elbow K_coarse = {k_elbow} | Current coarse-grid step = {current_step} | Refinement window factor = {refine_window_factor}")
 
         local_window = refine_window_grid(
             coarse_k=k_elbow,
             current_step=current_step,
             window_factor=refine_window_factor,
             fine_step=1)
-        print(f"[Refine Grid] 细化窗口 = [{local_window[0]}, {local_window[-1]}] | 候选点数 = {len(local_window)}")
+        print(f"[Refine Grid] Refinement window = [{local_window[0]}, {local_window[-1]}] | Number of candidates = {len(local_window)}")
 
         refine_newly = ensure_bic(
             bic_cache, local_window, embeddings, rng,
@@ -578,13 +578,13 @@ def estimate_k(embeddings,
             local_bics = [bic_cache[k] for k in local_window_available]
             final_k = find_elbow_l_method(local_window_available, local_bics)
             print(
-                f" -> 精搜 window 拐点: K = {final_k} "
-                f"(粗网格 K_coarse = {k_elbow}, window 长度 = {len(local_window_available)})")
+                f" -> Refinement window elbow: K = {final_k} "
+                f"(Coarse-grid K_coarse = {k_elbow}, Window length = {len(local_window_available)})")
             k_elbow = final_k
         else:
             print(
-                f" -> 精搜 window 可用点数 < 3 ({len(local_window_available)}), "
-                f"退回粗网格拐点 K = {k_elbow}")
+                f" -> Available points in the refinement window < 3 ({len(local_window_available)}), "
+                f"Falling back to the coarse-grid elbow K = {k_elbow}")
 
         results.update({
             'refined': True,
@@ -594,7 +594,7 @@ def estimate_k(embeddings,
             'refine_newly_computed': refine_newly,
         })
     else:
-        print("\n[Adaptive-K] 已通过 --no_refine 禁用精搜阶段")
+        print("\n[Adaptive-K] Refinement stage disabled via --no_refine")
 
     # ------------------------------------------------------------------
     # Stage 3 hierarchical split check
@@ -635,7 +635,7 @@ def estimate_k(embeddings,
                 max_extra_classes=split_max_extra_classes,
             )
         else:
-            split_diagnostics["skip_reason"] = (f"coarse_k_estimated={coarse_k_estimated} == macro_k_estimated={k_macro}; 跳过层级分裂。")
+            split_diagnostics["skip_reason"] = (f"coarse_k_estimated={coarse_k_estimated} == macro_k_estimated={k_macro}; skip split ")
             k_elbow = k_macro
 
     results['macro_k_estimated'] = int(k_macro)
@@ -646,7 +646,7 @@ def estimate_k(embeddings,
     results['all_evaluated_bic'] = [bic_cache[k] for k in results['all_evaluated_k']]
     results['bic_cache'] = bic_cache
 
-    print(f"\n[Adaptive-K] >>> 最终推断结果: 最优 K 估计值 = {k_elbow} <<<")
+    print(f"\n[Adaptive-K] >>> Final result: estimated optimal K = {k_elbow} <<<")
 
     return k_elbow, results
 
