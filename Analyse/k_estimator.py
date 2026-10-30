@@ -443,7 +443,7 @@ def estimate_k(embeddings,
                split_n_resamples=10,
                split_sample_ratio=0.8,
                split_support_threshold=0.8,
-               split_min_relative_bic_gain=0.08,
+               split_min_relative_bic_gain=0.05,
                split_min_global_gain_ratio=0.005,
                split_max_extra_classes=0):
     rng = np.random.default_rng(random_seed)
@@ -465,7 +465,7 @@ def estimate_k(embeddings,
     # ------------------------------------------------------------------
     while True:
         print("\n" + "=" * 65)
-        print(f" 迭代 #{iteration} | Upper bound max_k = {current_max_k} | Current step = {current_step}")
+        print(f" #{iteration} | Upper bound max_k = {current_max_k} | Current step = {current_step}")
         print("=" * 65)
 
         candidates = [1] + list(range(current_step, current_max_k, current_step))
