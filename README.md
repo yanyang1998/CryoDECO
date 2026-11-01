@@ -79,21 +79,35 @@ enabled by default and normally do not need tuning.
 The learned capacity and locked mask are written to `out/structural_z.json` and
 stored in every model checkpoint.
 
-#### Clustering
+#### Clustering and Automatic Estimation of *k*
 
 The pipeline clusters learned latent features to generate initial volumes.
-The automatic partition-count estimator described in the manuscript is not yet
-included in this release, so discrete compositional analysis still requires
-`k_num` to be supplied by the user.
+CryoDECO can either use a user-specified number of classes (`k_num`) or estimate it automatically during analysis
+(`k_num_auto=True`). The user-specified value is retained as a fallback if
+automatic estimation fails.
 
 | Parameter | Default | Description |
-|---|---|---|
-| `k_num` | `4` | Number of clusters. Set this to the expected number of discrete groups; `4` is an example setting, not a universal recommendation. |
-| `clustering_type` | `'gmm'` | Clustering algorithm. `'gmm'` (Gaussian Mixture Model) is more accurate; `'k-means++'` is much faster. |
+|---|---:|---|
+| `k_num` | `4` | Number of clusters used when automatic estimation is disabled. `4` is an example setting, not a universal recommendation. |
+| `k_num_auto` | `True` | Estimate *k* automatically from the learned structural latent representation and use the estimate for downstream clustering. |
+| `k_num_auto_umap_dim` | `16` | Number of UMAP dimensions used by the estimator. |
+| `k_num_auto_max_samples` | `20000` | Maximum number of particles used to estimate *k*. |
+| `k_num_auto_initial_max_k` | `30` | Initial upper bound of the adaptive coarse search. |
+| `k_num_auto_enable_split` | `True` | Enable an optional hierarchical check for macro-clusters that may contain two stable sub-states. |
+| `k_num_auto_run_plot` | `True` | Save 2-D UMAP comparisons before and after the optional hierarchical split when split labels are available. |
+| `k_num_auto_seed` | `42` | Random seed used for UMAP, subsampling, and automatic *k* estimation. |
+| `clustering_type` | `'gmm'` | Final clustering algorithm. `'gmm'` (Gaussian Mixture Model) is more accurate; `'k-means++'` is much faster.|
 
 ```yaml
-k_num=4               # Example/default; adjust for the dataset
-clustering_type='gmm' # Default: 'gmm'. Option: 'k-means++'
+k_num_auto=True                 # Use automatic k estimation
+k_num=4                         # Fallback if auto-k fails
+k_num_auto_umap_dim=16
+k_num_auto_max_samples=20000
+k_num_auto_initial_max_k=30
+k_num_auto_enable_split=False   # Optional hierarchical split check
+k_num_auto_run_plot=False       # Plot split comparison when available
+k_num_auto_seed=0
+clustering_type='gmm'           # Final clustering method
 ```
 
 #### Using Known Poses (CryoDECO-pose)
@@ -127,11 +141,12 @@ accelerate launch --mixed_precision=bf16 CryoDECO_run.py \
     --outdir $outdir \
     --pretrained_model_path $pretrained_model_path \
     --feature_dim 64 \
+    --k_num_auto True \
     --k_num 4 \
     --clustering_type 'gmm' \
     --epochs_sgd 100
 ```
-
+Here, `k_num` is only the fallback value because automatic estimation is enabled. 
 > By default, `accelerate` uses all available GPUs. To restrict to specific GPUs, use `--gpu_ids` (e.g., `--gpu_ids 0,1`) or `--num_processes`.
 
 ---
@@ -146,9 +161,9 @@ Focus on the **Clustering** results:
 
 | Output | Description |
 |---|---|
-| `clustering(knum)/*.mrc` | Reconstructed density maps for each cluster center |
-| `clustering(knum)/umap_clusters.png` | UMAP visualization of latent features, colored by cluster |
-| `clustering(knum)/clustering_cs_star/` | `.star` files for each cluster, importable into CryoSPARC |
+| `clustering(k)/*.mrc` | Reconstructed density maps for each cluster center |
+| `clustering(k)/umap_clusters.png` | UMAP visualization of latent features, colored by cluster |
+| `clustering(k)/clustering_cs_star/` | `.star` files for each cluster, importable into CryoSPARC |
 
 **Workflow:** Import `.star` files into CryoSPARC to create particle subsets for high-resolution refinement. If you used downsampled particles, map subsets back to the original full-resolution particles first. ([Guide: How to map back particles](readmes/mapback.md))
 
@@ -175,6 +190,7 @@ accelerate launch --mixed_precision=bf16 CryoDECO_run.py \
     --clustering_type 'gmm' \
     --skip_train True
 ```
+
 
 ---
 
