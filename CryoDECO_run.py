@@ -13,6 +13,7 @@ from accelerate.utils import InitProcessGroupKwargs
 from datetime import timedelta
 import torch
 import json
+import math
 from cryosparc.dataset import Dataset
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
@@ -156,6 +157,36 @@ def settings():
 
     }
     return settings
+
+
+def scale_learning_rates(train_settings, num_processes):
+    """Return fresh settings and an audit of square-root SGD-batch LR scaling.
+
+    Ordinary LR inputs retain their historical batch-128 convention; gate LR
+    inputs retain their batch-256 convention. Both are normalized to global
+    batch 256 before applying the same square-root rule.
+    """
+    batch = train_settings['batch_size_sgd']
+    for name, value in (('batch_size_sgd', batch), ('num_processes', num_processes)):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f'{name} must be a positive integer')
+    reference_global_batch = 256
+    global_batch = num_processes * batch
+    gate_scale = math.sqrt(global_batch / reference_global_batch)
+    regular_scale = 2 * gate_scale
+    regular_keys = ('lr', 'lr_pose_table', 'lr_conf_table', 'lr_conf_encoder',
+                    'min_lr_conf_table', 'min_lr_encoder')
+    base_lrs = {key: train_settings[key]
+                for key in (*regular_keys, 'structural_z_gate_lr')}
+    effective_lrs = {key: value * (gate_scale if key == 'structural_z_gate_lr'
+                                  else regular_scale)
+                     for key, value in base_lrs.items()}
+    scaled = dict(train_settings)
+    scaled.update(effective_lrs)
+    return scaled, dict(rule='sqrt', global_sgd_batch=global_batch,
+                       reference_global_batch=reference_global_batch,
+                       regular_scale=regular_scale, gate_scale=gate_scale,
+                       base_lrs=base_lrs, effective_lrs=effective_lrs)
 
 
 def main():
@@ -596,20 +627,10 @@ def main():
         pixel_size=1.0
 
 
-    reference_batch_size_sgd = 128
-    reference_num_processes = 2
-    lr_scale = accelerator.num_processes * configs['train_settings']['batch_size_sgd'] / reference_batch_size_sgd
-    gate_lr_scale = (accelerator.num_processes * configs['train_settings']['batch_size_sgd']
-                     / (reference_batch_size_sgd * reference_num_processes))
-    base_lrs = {}
-    for lr_key in ('lr', 'lr_pose_table', 'lr_conf_table', 'lr_conf_encoder',
-                   'min_lr_conf_table', 'min_lr_encoder'):
-        base_lrs[lr_key] = configs['train_settings'][lr_key]
-        configs['train_settings'][lr_key] *= lr_scale
-    base_lrs['structural_z_gate_lr'] = configs['train_settings']['structural_z_gate_lr']
-    configs['train_settings']['structural_z_gate_lr'] *= gate_lr_scale
-    accelerator.print(f"Learning-rate scaling: base={base_lrs}, effective_scale={lr_scale}, "
-                      f"gate_scale={gate_lr_scale}")
+    # settings() and CLI overrides provide unscaled inputs for this invocation.
+    configs['train_settings'], lr_scaling = scale_learning_rates(
+        configs['train_settings'], accelerator.num_processes)
+    accelerator.print('Learning-rate scaling: ' + json.dumps(lr_scaling))
     accelerator.print(
         f"Training evaluation clustering: {configs['train_settings']['clustering_type']}")
     accelerator.print(
